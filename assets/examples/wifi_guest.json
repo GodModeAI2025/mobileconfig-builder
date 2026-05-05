@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "PayloadIdentifier": "com.example.wifi.guest",
+    "PayloadDisplayName": "Guest Wi-Fi",
+    "PayloadDescription": "Configures the guest Wi-Fi network",
+    "PayloadOrganization": "Example Corp",
+    "PayloadScope": "System"
+  },
+  "payloads": [
+    {
+      "PayloadType": "com.apple.wifi.managed",
+      "PayloadDisplayName": "Wi-Fi: GuestNet",
+      "SSID_STR": "GuestNet",
+      "HIDDEN_NETWORK": false,
+      "AutoJoin": true,
+      "EncryptionType": "WPA",
+      "Password": "supersecret123"
+    }
+  ]
+}

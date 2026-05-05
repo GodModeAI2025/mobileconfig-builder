@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "PayloadIdentifier": "com.example.classroom.ipad",
+    "PayloadDisplayName": "Classroom iPad Profile",
+    "PayloadDescription": "Wi-Fi + restrictions for student iPads",
+    "PayloadOrganization": "Example School",
+    "PayloadScope": "System"
+  },
+  "payloads": [
+    {
+      "PayloadType": "com.apple.wifi.managed",
+      "PayloadDisplayName": "School Wi-Fi",
+      "SSID_STR": "School-Net",
+      "AutoJoin": true,
+      "HIDDEN_NETWORK": false,
+      "EncryptionType": "WPA2",
+      "Password": "schoolpass2026"
+    },
+    {
+      "PayloadType": "com.apple.applicationaccess",
+      "PayloadDisplayName": "Restrictions",
+      "allowAppInstallation": false,
+      "allowCamera": true,
+      "allowExplicitContent": false,
+      "allowInAppPurchases": false,
+      "forceITunesStorePasswordEntry": true
+    }
+  ]
+}

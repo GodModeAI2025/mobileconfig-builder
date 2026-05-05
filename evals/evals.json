@@ -1,0 +1,95 @@
+{
+  "skill_name": "mobileconfig-builder",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Bau mir bitte ein WLAN-Profil für unsere Macs. SSID ist 'GuestNet', WPA2, Passwort 'supersecret123', soll automatisch joinen, nicht versteckt. Identifier com.example.wifi.guest.",
+      "expected_output": "Eine valide .mobileconfig mit einem PayloadContent-Eintrag vom Typ com.apple.wifi.managed, korrekten SSID/EncryptionType/Password/AutoJoin-Werten, deterministischen UUIDs, Top-Level PayloadType=Configuration und PayloadVersion=1. Strikte Schema-Validierung muss durchgehen.",
+      "files": ["assets/examples/wifi_guest.json"],
+      "expectations": [
+        "Output is a valid Apple plist (XML, parseable with plistlib)",
+        "Top-Level PayloadType is exactly 'Configuration'",
+        "Top-Level PayloadVersion is exactly 1",
+        "Top-Level PayloadIdentifier matches the input identifier",
+        "Top-Level PayloadUUID is a valid UUID v4/v5 string",
+        "PayloadContent contains exactly one inner payload",
+        "Inner PayloadType is 'com.apple.wifi.managed'",
+        "Inner SSID_STR equals 'GuestNet'",
+        "Inner EncryptionType is one of the schema's allowed values (WEP/WPA/WPA2/WPA3/Any/None)",
+        "Inner AutoJoin is a real boolean (not the string 'true')",
+        "Inner Password is preserved exactly",
+        "Inner payload has its own PayloadUUID and PayloadIdentifier auto-filled",
+        "Strict-mode schema validation passes with zero errors"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Erstelle ein Profil das auf einem Mac alle Apple-Intelligence-Funktionen abschaltet — Writing Tools, Image Playground, Genmoji, Mail-Zusammenfassungen, externe KI-Integrationen wie ChatGPT, Apple Intelligence Reports, alles. Identifier com.zimmermann.disable-apple-intelligence.",
+      "expected_output": "Eine valide .mobileconfig mit einem com.apple.applicationaccess Payload, der mindestens diese Boolean-Keys enthält und alle auf false gesetzt hat: allowWritingTools, allowImagePlayground, allowGenmoji, allowMailSummary, allowExternalIntelligenceIntegrations, allowAppleIntelligenceReport. Schema-strict-Validierung muss durchgehen. Keys, die nur auf iOS existieren (z.B. allowImageWand), dürfen für ein macOS-Profil weggelassen werden.",
+      "files": [],
+      "expectations": [
+        "Output is a valid Apple plist parseable by plistlib",
+        "Inner PayloadType is 'com.apple.applicationaccess'",
+        "allowWritingTools is set and is the boolean False",
+        "allowImagePlayground is set and is the boolean False",
+        "allowGenmoji is set and is the boolean False",
+        "allowMailSummary is set and is the boolean False",
+        "allowExternalIntelligenceIntegrations is set and is the boolean False",
+        "allowAppleIntelligenceReport is set and is the boolean False",
+        "All AI-related allow* keys present in the payload have value False (not 0, not 'false' string)",
+        "No iOS-only keys like allowImageWand are present (they would not validate strictly against schema for macOS)",
+        "Strict-mode schema validation passes with zero errors"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Klassenzimmer-Setup: ein einziges Profil, das Schüler-iPads mit unserem WLAN 'School-Net' (WPA2, Passwort 'schoolpass2026') verbindet und gleichzeitig App-Installation, In-App-Käufe und expliziten Inhalt verbietet, Kamera erlaubt. Identifier com.example.classroom.ipad.",
+      "expected_output": "Ein .mobileconfig mit zwei Payloads im PayloadContent-Array: ein com.apple.wifi.managed mit den richtigen WLAN-Credentials, und ein com.apple.applicationaccess mit allowAppInstallation=false, allowInAppPurchases=false, allowExplicitContent=false, allowCamera=true. Beide Payloads haben unterschiedliche, deterministische UUIDs.",
+      "files": ["assets/examples/classroom_ipad.json"],
+      "expectations": [
+        "Output is a valid Apple plist parseable by plistlib",
+        "PayloadContent array has length 2",
+        "Exactly one inner payload has PayloadType 'com.apple.wifi.managed'",
+        "Exactly one inner payload has PayloadType 'com.apple.applicationaccess'",
+        "Wi-Fi payload has SSID_STR equal to 'School-Net'",
+        "Wi-Fi payload has EncryptionType 'WPA2'",
+        "Restrictions payload has allowAppInstallation set to False",
+        "Restrictions payload has allowCamera set to True",
+        "Restrictions payload has allowInAppPurchases set to False",
+        "Both inner payloads have distinct PayloadUUIDs (no collision)",
+        "Both inner payloads have PayloadIdentifiers that are reverse-DNS strings derived from the top-level identifier",
+        "Strict-mode schema validation passes with zero errors"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Ich gebe dir absichtlich kaputten Input: PayloadType com.apple.wifi.managed mit EncryptionType='SUPERWPA' (gibts nicht) und AutoJoin='ja' (string statt boolean). Bau das mit strikter Validierung — was passiert?",
+      "expected_output": "Strict-Mode-Build muss FAILEN (Exit-Code != 0). Die Fehlermeldung muss klar benennen, dass EncryptionType nicht im erlaubten Wertebereich liegt UND dass AutoJoin den falschen Typ hat. Es darf KEINE .mobileconfig-Datei erzeugt werden.",
+      "files": [],
+      "expectations": [
+        "Build script exits with non-zero exit code in strict mode",
+        "Error output mentions 'EncryptionType' by name",
+        "Error output mentions the invalid value 'SUPERWPA' or the allowed list (WEP/WPA/WPA2/WPA3/Any/None)",
+        "Error output mentions 'AutoJoin' by name",
+        "Error output indicates a type mismatch for AutoJoin (expected boolean)",
+        "No .mobileconfig output file is created on the filesystem",
+        "Errors are printed to stderr, not stdout"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Frag mich nichts — ich will nur die Liste aller PayloadTypes sehen, die das Apple-Schema kennt. Aktueller Stand vom release-Branch.",
+      "expected_output": "Aufruf von scripts/fetch_schema.py --list mit dem offline-Cache. Ausgabe ist eine sortierte Liste der PayloadTypes, jeweils mit unterstützten OS und Titel. Es müssen mindestens 50 Einträge sein (das Repo enthält ~127 Profil-Schemas), inklusive bekannter wie com.apple.wifi.managed, com.apple.vpn.managed, com.apple.applicationaccess.",
+      "files": [],
+      "expectations": [
+        "fetch_schema.py --list executes and exits with code 0",
+        "Output contains 'com.apple.wifi.managed'",
+        "Output contains 'com.apple.applicationaccess'",
+        "Output contains 'com.apple.vpn.managed'",
+        "Output lists at least 50 distinct PayloadTypes",
+        "Each line shows OS support markers like [iOS,macOS,...] or similar",
+        "Output is sorted alphabetically by PayloadType"
+      ]
+    }
+  ]
+}

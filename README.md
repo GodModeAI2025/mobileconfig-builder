@@ -213,10 +213,10 @@ CI runs the same suite on every push and pull request against `main`, plus five 
 - **The schema cache never expires.** A cached file is served until you run `fetch_schema.py --refresh`. A payload type Apple adds shows up on the next online fetch because the file is missing locally, but keys Apple changes inside an existing file stay stale until a refresh.
 - **No validator for existing profiles.** The tool checks what it builds. Handing it a `.mobileconfig` from somewhere else is not supported.
 - **Signing needs OpenSSL.** `openssl smime` has to be in `PATH`. There is no fallback to `security cms` on macOS.
-- **PyYAML is installed at runtime.** On first use the scripts run `pip install pyyaml` when the module is missing. On a locked-down machine, install it yourself first.
+- **PyYAML is installed at runtime.** On first use the scripts run `pip install pyyaml` when the module is missing, and retry with `--break-system-packages` for a Python whose packages the system manages. If both attempts fail, the script names the pip command to run by hand and exits 2. On a locked-down machine, install it yourself first.
 - **Encrypted payloads are out of scope.** Apple allows a payload to be encrypted for one specific device. This tool writes plain text payloads only, which is why the secrets section below matters.
 - **DDM is not covered.** See the note below.
-- **CI covers one Python version.** The workflow runs on Python 3.12 against a pinned schema commit. Python 3.9, which the requirements section claims as the floor, and the current Apple schema are checked by hand.
+- **CI covers one Python version.** The workflow runs on Python 3.12 with a current pip, against a pinned schema commit. The floor the requirements section names is checked by hand: for this release the eval suite, the CLI checks and the PyYAML auto-install were run on the Python 3.9 and pip 21.2.4 that ship with macOS. The current Apple schema is checked by hand too.
 
 ## Roadmap
 

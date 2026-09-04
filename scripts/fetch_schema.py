@@ -30,14 +30,41 @@ CACHE_DIR = Path.home() / ".cache" / "mobileconfig-builder"
 
 
 def ensure_yaml():
+    """Sorgt dafür, dass PyYAML importierbar ist, sonst Abbruch mit Exit 2.
+
+    Zwei Anläufe, weil kein einzelner Aufruf überall durchkommt: pip kennt
+    --break-system-packages erst ab 23.0.1, das mit macOS ausgelieferte
+    Python 3.9 bringt 21.2.4 mit und bricht an der unbekannten Option ab.
+    Ein von der Distribution verwaltetes Python wiederum weist die
+    Installation ohne diese Option zurück. Also erst ohne, dann mit. Wenn
+    beides scheitert, kommt eine Meldung statt eines Tracebacks.
+    """
     try:
         import yaml  # noqa: F401
         return
     except ImportError:
-        print("Installing PyYAML…", file=sys.stderr)
-        import subprocess
-        subprocess.check_call([sys.executable, "-m", "pip", "install",
-                               "--quiet", "--break-system-packages", "pyyaml"])
+        pass
+
+    print("Installing PyYAML…", file=sys.stderr)
+    import importlib
+    import subprocess
+    basis = [sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"]
+    fehler = None
+    for befehl in (basis, basis + ["--break-system-packages"]):
+        try:
+            subprocess.run(befehl, check=True, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as exc:
+            fehler = exc
+            continue
+        importlib.invalidate_caches()
+        return
+
+    if fehler is not None and fehler.stderr:
+        sys.stderr.write(fehler.stderr.decode("utf-8", "replace"))
+    print("PyYAML fehlt und liess sich nicht automatisch installieren. "
+          "Bitte von Hand nachziehen:\n"
+          f"  {sys.executable} -m pip install pyyaml", file=sys.stderr)
+    raise SystemExit(2)
 
 
 def http_get(url: str) -> bytes:

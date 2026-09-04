@@ -127,4 +127,10 @@ Apple's newer DDM declarations use a different format (JSON, not `.mobileconfig`
 
 ## License
 
-MIT
+Apache License 2.0, see [LICENSE](LICENSE).
+
+The Apple profile schemas this tool validates against come from
+[apple/device-management](https://github.com/apple/device-management) and are
+MIT-licensed by Apple Inc. They are fetched at runtime into
+`~/.cache/mobileconfig-builder/` and are not part of this repository. See
+[NOTICE](NOTICE).

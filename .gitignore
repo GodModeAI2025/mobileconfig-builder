@@ -1,1 +1,17 @@
 .DS_Store
+
+# Erzeugte Profile. Sie enthalten Klartext-Secrets wie WLAN-Passwoerter,
+# Shared Secrets und Zugangsdaten, gehoeren also nie ins Repo.
+*.mobileconfig
+
+# Signier-Material
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+
+# Python
+__pycache__/
+*.py[cod]

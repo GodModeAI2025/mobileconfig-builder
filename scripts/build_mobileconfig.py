@@ -14,12 +14,14 @@ Workflow:
   3. Ergänzt fehlende Pflichtfelder (PayloadIdentifier, PayloadUUID, PayloadVersion)
      deterministisch.
   4. Schreibt eine binäre+lesbare XML-Plist mit Endung .mobileconfig.
-  5. (Optional) Signiert mit OpenSSL, wenn cert/key übergeben werden.
+  5. (Optional) Signiert das Profil, entweder mit PEM-Dateien über OpenSSL
+     oder über eine Identität im macOS-Schlüsselbund.
 
 Usage:
     python3 build_mobileconfig.py spec.json -o profile.mobileconfig
     python3 build_mobileconfig.py spec.yaml -o profile.mobileconfig --validate-strict
     python3 build_mobileconfig.py spec.json -o p.mobileconfig --sign-cert cert.pem --sign-key key.pem
+    python3 build_mobileconfig.py spec.json -o p.mobileconfig --sign-identity "Profil-Signer"
 """
 from __future__ import annotations
 import argparse
@@ -315,20 +317,234 @@ def build_profile(spec: dict, branch: str = "release",
 # ─────────────────────────────────────────────────────────────────────────────
 # Optional signing
 # ─────────────────────────────────────────────────────────────────────────────
-def sign_profile(unsigned_path: Path, signed_path: Path,
+# Fester Pfad statt PATH-Suche. Was ein Profil signiert, soll nicht davon
+# abhängen, was sonst noch `security` heißt.
+SECURITY_TOOL = "/usr/bin/security"
+
+# Warum nicht `-p codesigning`: `security find-identity` kennt zwölf Policies,
+# und codesigning ist die falsche davon. Ein Signer-Zertifikat für
+# Konfigurationsprofile trägt die EKU emailProtection (S/MIME) oder gar keine
+# einschränkende EKU und fällt damit nicht unter die Code-Signing-Policy. Auf
+# einem eingerichteten Firmen-Mac sind die Listen nachweislich verschieden:
+#   -p codesigning  zeigt das Apple-Development-Zertifikat und ein selbst
+#                   signiertes, nicht aber die Identität aus der internen CA
+#   -p smime        zeigt genau die Identität aus der internen CA
+#   -p basic        zeigt beide CA-Identitäten, nicht aber das selbst signierte
+# Keine Liste enthält die andere, deshalb fragt list_identities beide
+# brauchbaren Policies ab und vereinigt das Ergebnis.
+IDENTITY_POLICIES = ("smime", "basic")
+
+# Zeilenformat von `security find-identity -v`:
+#   "  1) 9AC1…CE2C \"Profil-Signer\""
+_IDENTITY_ZEILE = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.*)"\s*$')
+
+_SHA1_HEX = re.compile(r"^[0-9A-Fa-f]{40}$")
+
+
+def list_identities(keychain: Path | None = None) -> list[tuple[str, str]]:
+    """Signier-Identitäten aus dem Schlüsselbund als [(SHA-1, Name)].
+
+    Dient der Fehlermeldung, nicht der Auswahl: was `--sign-identity` bekommt,
+    geht unverändert an `security cms`. Diese Liste sagt nur, was zur Auswahl
+    stünde, wenn der Name nicht passt.
+    """
+    gefunden: list[tuple[str, str]] = []
+    gesehen: set[str] = set()
+    for policy in IDENTITY_POLICIES:
+        cmd = [SECURITY_TOOL, "find-identity", "-v", "-p", policy]
+        if keychain:
+            cmd.append(str(keychain))
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        except OSError:
+            return gefunden
+        for zeile in proc.stdout.splitlines():
+            treffer = _IDENTITY_ZEILE.match(zeile)
+            if not treffer:
+                continue
+            sha1 = treffer.group(1).upper()
+            if sha1 in gesehen:
+                continue
+            gesehen.add(sha1)
+            gefunden.append((sha1, treffer.group(2)))
+    return gefunden
+
+
+def _identitaeten_text(identitaeten: list[tuple[str, str]]) -> str:
+    policies = ", ".join(IDENTITY_POLICIES)
+    if not identitaeten:
+        return (f"Der Schlüsselbund meldet unter den Policies {policies} "
+                f"keine gültige Identität.")
+    zeilen = [f"Zur Auswahl stehen (Policies {policies}):"]
+    for sha1, name in identitaeten:
+        zeilen.append(f'  {sha1}  "{name}"')
+    zeilen.append("Die Liste ist gefiltert: find-identity zeigt nur, was zur "
+                  "Policy passt und gültig ist.")
+    return "\n".join(zeilen)
+
+
+def resolve_identity(wunsch: str, keychain: Path | None = None) -> str:
+    """Übersetzt die Angabe aus --sign-identity in den Namen für `cms -N`.
+
+    `security cms` nimmt einen Zertifikatsnamen, keinen Fingerabdruck. Wer
+    einen SHA-1 angibt, bekommt ihn hier aufgelöst. Ein Name, der auf mehrere
+    Zertifikate passt, wird abgelehnt statt geraten: `security cms` griffe
+    sonst eines davon, ohne zu sagen welches.
+    """
+    identitaeten = list_identities(keychain=keychain)
+    if _SHA1_HEX.match(wunsch):
+        for sha1, name in identitaeten:
+            if sha1 == wunsch.upper():
+                return name
+        raise SchemaError(
+            f"Kein Zertifikat mit dem SHA-1 {wunsch} im Schlüsselbund.\n"
+            + _identitaeten_text(identitaeten))
+    passend = {sha1 for sha1, name in identitaeten if name == wunsch}
+    if len(passend) > 1:
+        raise SchemaError(
+            f"'{wunsch}' passt auf {len(passend)} Zertifikate. Bitte den "
+            f"SHA-1 angeben statt des Namens.\n"
+            + _identitaeten_text(identitaeten))
+    return wunsch
+
+
+def _aufraeumen(pfad: Path, bestand_vorher: bool) -> None:
+    """Löscht eine Ausgabedatei, die erst dieser Lauf angelegt hat.
+
+    Beide Signier-Werkzeuge legen ihre Ausgabedatei an, bevor sie scheitern.
+    Zurück bleibt sonst eine leere oder halbe .mobileconfig, die aussieht wie
+    ein fertiges Profil.
+    """
+    if bestand_vorher:
+        return
+    try:
+        pfad.unlink()
+    except OSError:
+        pass
+
+
+def _signieren(cmd: list[str], profil: bytes, signed_path: Path,
+               werkzeug: str, nachspann: str = "") -> None:
+    """Ruft das Signier-Werkzeug und schickt das Profil über stdin.
+
+    Über stdin, damit das unsignierte Profil mit seinen Klartext-Passwörtern
+    gar nicht erst auf die Platte kommt. Vorher schrieb main() eine
+    `<output>.unsigned.mobileconfig` daneben und löschte sie nach dem
+    Signieren. Scheiterte der Aufruf, blieb sie mit Modus 0644 liegen, samt
+    WLAN-Passwort im Klartext.
+    """
+    bestand_vorher = signed_path.exists()
+    try:
+        proc = subprocess.run(cmd, input=profil, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+    except OSError as fehler:
+        _aufraeumen(signed_path, bestand_vorher)
+        raise SchemaError(f"{cmd[0]} ließ sich nicht starten: {fehler}")
+
+    meldung = proc.stderr.decode("utf-8", "replace").strip()
+    if proc.returncode != 0:
+        _aufraeumen(signed_path, bestand_vorher)
+        text = f"{werkzeug} ist mit Exit {proc.returncode} gescheitert."
+        if meldung:
+            text += f"\n{meldung}"
+        if nachspann:
+            text += f"\n{nachspann}"
+        raise SchemaError(text)
+    # Der Exit-Code allein ist kein Beleg: `security cms -S` beendet sich mit
+    # 0, auch wenn es die Identität nicht findet, meldet den Fehler nur auf
+    # stderr und legt eine Datei mit null Bytes an. Deshalb wird das Ergebnis
+    # nachgesehen statt geglaubt.
+    if not signed_path.exists() or signed_path.stat().st_size == 0:
+        _aufraeumen(signed_path, bestand_vorher)
+        text = f"{werkzeug} meldet Exit 0, hat aber nichts nach " \
+               f"{signed_path} geschrieben."
+        if meldung:
+            text += f"\n{meldung}"
+        if nachspann:
+            text += f"\n{nachspann}"
+        raise SchemaError(text)
+    # CMS im DER-Format fängt mit einer ASN.1-SEQUENCE an (0x30). Was damit
+    # nicht anfängt, ist keine Signatur, sondern durchgereichter Input.
+    with signed_path.open("rb") as fh:
+        erstes_byte = fh.read(1)
+    if erstes_byte != b"\x30":
+        _aufraeumen(signed_path, bestand_vorher)
+        raise SchemaError(
+            f"{werkzeug} hat nach {signed_path} etwas geschrieben, das nicht "
+            f"mit einer ASN.1-SEQUENCE anfängt (erstes Byte "
+            f"{erstes_byte!r}). Das ist keine PKCS#7-Signatur.")
+
+
+def sign_profile(profil: bytes, signed_path: Path,
                  cert: Path, key: Path,
                  ca_chain: Path | None = None) -> None:
-    """Use openssl smime to sign the profile (CMS / PKCS#7 detached → embedded)."""
+    """Signiert mit `openssl smime` (CMS / PKCS#7, DER, eingebettetes XML).
+
+    `profil` sind die Bytes der unsignierten Plist. Sie gehen über stdin an
+    openssl, es gibt keine unsignierte Zwischendatei.
+    """
     cmd = [
         "openssl", "smime", "-sign", "-signer", str(cert),
         "-inkey", str(key), "-nodetach", "-outform", "der",
-        "-in", str(unsigned_path), "-out", str(signed_path),
+        "-out", str(signed_path),
     ]
     if ca_chain:
         cmd += ["-certfile", str(ca_chain)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise SchemaError(f"openssl signing failed: {proc.stderr}")
+    _signieren(cmd, profil, signed_path, "openssl smime -sign")
+
+
+def sign_profile_keychain(profil: bytes, signed_path: Path, identity: str,
+                          keychain: Path | None = None) -> None:
+    """Signiert über eine Identität im macOS-Schlüsselbund.
+
+    `openssl` kann einen Schlüssel im Schlüsselbund nicht lesen, deshalb läuft
+    dieser Weg über `security cms -S`. Der private Schlüssel verlässt den
+    Schlüsselbund nicht, was in Unternehmen der übliche Fall ist. Der Preis
+    ist ein zweiter Code-Pfad, den es nur auf macOS gibt.
+
+    `-H SHA256` ist gesetzt, weil `security cms` sonst SHA-1 nimmt.
+    """
+    if sys.platform != "darwin":
+        raise SchemaError(
+            f"--sign-identity signiert über den macOS-Schlüsselbund und läuft "
+            f"nur auf macOS. Auf {sys.platform} bleibt der Weg über "
+            f"--sign-cert und --sign-key mit PEM-Dateien.")
+    nickname = resolve_identity(identity, keychain=keychain)
+    cmd = [SECURITY_TOOL, "cms", "-S", "-N", nickname, "-H", "SHA256",
+           "-o", str(signed_path)]
+    if keychain:
+        cmd += ["-k", str(keychain)]
+    _signieren(cmd, profil, signed_path, "security cms -S",
+               nachspann=(f"Angefragt war: {identity}\n"
+                          + _identitaeten_text(list_identities(
+                              keychain=keychain))))
+    _pruefe_cms_inhalt(profil, signed_path)
+
+
+def _pruefe_cms_inhalt(profil: bytes, signed_path: Path) -> None:
+    """Packt die Signatur wieder aus und vergleicht mit dem Original.
+
+    `security cms -S` ist beim Melden von Fehlern unzuverlässig: es endet mit
+    Exit 0, auch wenn nichts signiert wurde. Beim Nachstellen einer
+    erfundenen Identität sind außerdem zwei von sieben Läufen mit einer
+    Ausgabedatei durchgelaufen, während zwanzig direkte Aufrufe von
+    `security cms` mit derselben Identität sämtlich nichts geschrieben haben.
+    Statt dem Werkzeug zu glauben, wird die fertige Datei mit
+    `security cms -D` wieder ausgepackt. Stimmt der Inhalt nicht Byte für
+    Byte mit dem Profil überein, fliegt die Datei raus.
+    """
+    proc = subprocess.run([SECURITY_TOOL, "cms", "-D", "-i", str(signed_path)],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0 or proc.stdout != profil:
+        try:
+            signed_path.unlink()
+        except OSError:
+            pass
+        meldung = proc.stderr.decode("utf-8", "replace").strip()
+        raise SchemaError(
+            "Die Signatur lässt sich nicht wieder auspacken oder enthält "
+            "nicht das gebaute Profil. Die Ausgabedatei wurde gelöscht."
+            + (f"\n{meldung}" if meldung else ""))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +582,28 @@ def main():
                     help="Privater Schlüssel (PEM) zum Signieren")
     ap.add_argument("--sign-ca", type=Path,
                     help="CA-Chain (PEM, optional)")
+    ap.add_argument("--sign-identity",
+                    help="Name oder SHA-1 einer Identität im macOS-"
+                         "Schlüsselbund. Signiert über `security cms`, der "
+                         "private Schlüssel bleibt im Schlüsselbund. "
+                         "Kandidaten zeigt "
+                         "`security find-identity -v -p smime` "
+                         "(nicht -p codesigning).")
+    ap.add_argument("--keychain", type=Path,
+                    help="Schlüsselbund-Datei, in der --sign-identity gesucht "
+                         "wird (Vorgabe: die Suchliste des Benutzers)")
     args = ap.parse_args()
+
+    # Flag-Kombinationen zuerst, damit ein Tippfehler nicht erst nach der
+    # Schema-Validierung auffällt.
+    if args.sign_identity and (args.sign_cert or args.sign_key or args.sign_ca):
+        sys.exit("FEHLER: --sign-identity und --sign-cert/--sign-key/--sign-ca "
+                 "sind zwei getrennte Wege. Entweder der Schlüssel bleibt im "
+                 "Schlüsselbund, oder er liegt als PEM-Datei vor.")
+    if bool(args.sign_cert) != bool(args.sign_key):
+        sys.exit("FEHLER: --sign-cert und --sign-key gehören zusammen.")
+    if args.keychain and not args.sign_identity:
+        sys.exit("FEHLER: --keychain wirkt nur zusammen mit --sign-identity.")
 
     spec = load_spec(args.spec)
     profile, errors = build_profile(
@@ -388,23 +625,30 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.sign_cert and args.sign_key:
-        # Write unsigned to a tmp file, then sign.
-        tmp = args.output.with_suffix(".unsigned.mobileconfig")
-        with tmp.open("wb") as f:
-            plistlib.dump(profile, f, fmt=plistlib.FMT_XML)
-        sign_profile(tmp, args.output, args.sign_cert, args.sign_key,
-                     args.sign_ca)
-        tmp.unlink()
-        print(f"✓ Signed profile written to {args.output}")
-    elif args.sign_cert or args.sign_key:
-        sys.exit("--sign-cert and --sign-key must be used together")
-    else:
-        with args.output.open("wb") as f:
-            plistlib.dump(profile, f, fmt=plistlib.FMT_XML)
-        print(f"✓ Unsigned profile written to {args.output}")
-        print("  (Apple-Geräte zeigen 'Nicht signiert' beim Install — "
-              "für produktiven Einsatz mit --sign-cert/--sign-key signieren.)")
+    # Einmal serialisieren, dann je nach Weg weiterreichen. Die Bytes gehen an
+    # das Signier-Werkzeug über stdin, damit kein unsigniertes Zwischenprodukt
+    # auf der Platte landet.
+    profil_bytes = plistlib.dumps(profile, fmt=plistlib.FMT_XML)
+
+    try:
+        if args.sign_identity:
+            sign_profile_keychain(profil_bytes, args.output,
+                                  args.sign_identity, keychain=args.keychain)
+            print(f"✓ Signed profile written to {args.output}")
+            print(f"  (Schlüsselbund-Identität: {args.sign_identity})")
+        elif args.sign_cert:
+            sign_profile(profil_bytes, args.output, args.sign_cert,
+                         args.sign_key, args.sign_ca)
+            print(f"✓ Signed profile written to {args.output}")
+        else:
+            args.output.write_bytes(profil_bytes)
+            print(f"✓ Unsigned profile written to {args.output}")
+            print("  (Apple-Geräte zeigen 'Nicht signiert' beim Install. "
+                  "Produktiv wird signiert, siehe --sign-cert/--sign-key "
+                  "oder --sign-identity.)")
+    except SchemaError as fehler:
+        print(f"FEHLER: {fehler}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

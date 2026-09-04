@@ -163,7 +163,29 @@ Bei Validierungsfehlern korrigiere die Spec mit dem User. Nicht-strikt (`ohne --
 
 Wenn der User kein Zertifikat hat und trotzdem ausrollen will: nicht stillschweigend unsigniert liefern, sondern die Regel nennen und auf `references/signing.md` verweisen. Signieren ersetzt den Installationsdialog nicht; das Gerät fragt weiter nach und zeigt das Profil nur dann als verifiziert, wenn es der signierenden CA vertraut.
 
-Mit X.509-Zertifikat signieren:
+Es gibt zwei Wege. Frag zuerst, wo der Schlüssel liegt.
+
+**Weg 1, Schlüssel liegt im macOS-Schlüsselbund.** Der Regelfall in
+Unternehmen: das Signaturzertifikat kommt per SCEP oder ADCS und ist nicht
+exportierbar. Dann signiert `security cms`, der Schlüssel bleibt im
+Schlüsselbund.
+
+```bash
+# Kandidaten zeigen lassen und den User auswählen lassen
+security find-identity -v -p smime
+security find-identity -v -p basic
+
+python3 scripts/build_mobileconfig.py spec.json \
+  -o profil.mobileconfig --offline \
+  --sign-identity "Profil-Signer 2026"
+```
+
+Nimm `-p smime` oder `-p basic`, nicht `-p codesigning`. Ein Profil-Signer
+trägt die EKU `emailProtection` oder gar keine einschränkende EKU und taucht
+unter der Code-Signing-Policy nicht auf. Wer dort nachsieht, hält ein
+vorhandenes Zertifikat für nicht vorhanden.
+
+**Weg 2, Schlüssel liegt als PEM-Datei vor.**
 
 ```bash
 python3 scripts/build_mobileconfig.py spec.json \
@@ -176,9 +198,14 @@ python3 scripts/build_mobileconfig.py spec.json \
 Voraussetzungen:
 - Cert und Key im PEM-Format
 - `openssl` muss im PATH sein
-- Das Zertifikat muss Code-Signing oder ein passendes EKU haben, idealerweise von einer auf dem Zielgerät vertrauten CA
+- Passende EKU am Zertifikat, `emailProtection` oder keine einschränkende, idealerweise von einer auf dem Zielgerät vertrauten CA
 
-**Wichtig:** Niemals private Keys über den Chat einsammeln. User soll Pfade auf seinem System angeben.
+**Wichtig:** Niemals private Keys über den Chat einsammeln. User soll Pfade
+auf seinem System angeben, oder besser den Namen einer Identität im
+Schlüsselbund. Liegt der Schlüssel im Schlüsselbund, schlag `--sign-identity`
+vor statt `--sign-cert`: dann muss ihn niemand zum Signieren exportieren.
+Beim ersten Aufruf fragt macOS in einem Dialog nach der Erlaubnis; über SSH
+gibt es diesen Dialog nicht und der Aufruf bleibt hängen.
 
 ### Schritt 8 — Liefern + Hinweise zur Installation
 
@@ -221,7 +248,7 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 | `scripts/fetch_schema.py` | Lädt/cached YAML-Schemas vom GitHub-Repo. Unterstützt `--offline`, `--from-clone`, `--list`. |
 | `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter und Required-Only. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
-| `evals/run_tests.py` | Regressions-Test-Suite mit 6 realistischen Test-Cases (siehe unten). |
+| `evals/run_tests.py` | Regressions-Test-Suite mit 7 realistischen Test-Cases (siehe unten). |
 
 ## Beispiele
 
@@ -234,7 +261,7 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die drei Skripte (fetch/inspect/build) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
 
 ```bash
-python3 evals/run_tests.py        # alle 6 Evals
+python3 evals/run_tests.py        # alle 7 Evals
 python3 evals/run_tests.py -v     # ausführlich (zeigt jeden Check)
 python3 evals/run_tests.py --eval-id 4   # nur einen
 ```
@@ -249,6 +276,7 @@ Die Suite prüft konkret:
 | 4 | `invalid-input-rejected` | Negativ-Test: kaputter Input (ungültiger EncryptionType, falscher Typ für AutoJoin) MUSS in `--validate-strict` mit Exit-Code 2 abbrechen, dem dokumentierten Validierungs-Fehlschlag. Auf stderr steht ein Report unter `Validation issues:`, der EncryptionType und AutoJoin benennt, kein Traceback. **Keine** Output-Datei. |
 | 5 | `list-payload-types` | `fetch_schema.py --list` listet ≥50 Payloads aus dem Cache, sortiert, Top-Hits sind enthalten. |
 | 6 | `unknown-top-level-key-rejected` | Ein erfundener Key im `meta`-Block bricht strikt mit Exit-Code 2 ab, gemeldet als `top-level: unknown key '...'` und nicht als Payload-Fund, ohne Output-Datei. Ohne `--validate-strict` baut dieselbe Spec weiter durch, und `wifi_guest.json` bleibt strikt grün. |
+| 7 | `signing-error-paths` | Fehlerpfade beider Signier-Wege, auf jeder Plattform prüfbar: unbekannte Schlüsselbund-Identität und nicht existierende PEM-Datei enden mit Exit-Code 2, mit Meldung statt Traceback und ohne Rückstände. Insbesondere bleibt keine unsignierte Zwischendatei mit dem WLAN-Passwort liegen. Der Erfolgsfall des Schlüsselbund-Wegs ist nicht automatisiert, er braucht eine Identität im Schlüsselbund. |
 
 Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Einträge hat, hat Apple etwas am Repo geändert — Hinweis lesen, nicht reflexartig den Test anpassen.
 

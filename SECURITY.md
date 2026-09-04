@@ -29,17 +29,23 @@ referenced by path via `--sign-key`.
 
 **Attack path 1: the profile lands in git.** The quick start writes into the working directory
 (`-o wifi.mobileconfig` in `README.md:26`, `-o guest-wifi.mobileconfig` in `index.html:509`), which
-is the repo root if you follow it literally. `.gitignore` has one line, `.DS_Store`, so `git add -A`
-commits the passphrase. Secret scanning and push protection are enabled here, but they match
-provider token patterns, not a WPA passphrase in an XML plist, and non-provider patterns are off.
+is the repo root if you follow it literally. `.gitignore` now covers `*.mobileconfig` and key
+material as a backstop, but a spec file with a real password is not covered by any pattern, and
+`tools/scan_secrets.py` only sees what is already staged. Secret scanning and push protection are
+enabled here, but they match provider token patterns, not a WPA passphrase in an XML plist, and
+non-provider patterns are off.
 
-**Attack path 2: signing fails and the cleartext stays behind.** `scripts/build_mobileconfig.py`
-writes the unsigned plist to `<output>.unsigned.mobileconfig` in lines 361-366, calls `sign_profile`,
-and unlinks the temp file only afterwards. `sign_profile` raises at line 299 when `openssl` exits
-non-zero, so `tmp.unlink()` is never reached. Reproduced with a nonexistent cert path:
+**Attack path 2: signing fails and the cleartext stays behind. Closed.** Until the keychain work,
+`scripts/build_mobileconfig.py` wrote the unsigned plist to `<output>.unsigned.mobileconfig`, called
+`sign_profile`, and unlinked the temp file only afterwards. `sign_profile` raised when `openssl`
+exited non-zero, so `tmp.unlink()` was never reached. Reproduced with a nonexistent cert path:
 `leak.unsigned.mobileconfig` stayed on disk, mode 0644, containing
 `<key>Password</key><string>supersecret123</string>`, next to a zero byte `leak.mobileconfig` that
-reads like a finished profile. The exception surfaced as a traceback.
+reads like a finished profile, and the exception surfaced as a traceback. The unsigned plist now
+goes to the signing tool over stdin and is never written to disk. On failure the output file is
+removed again unless it existed before the run, the message is a message and not a traceback, and
+the exit code is 2. Eval 7 asserts all of it, including that no file in the output directory
+contains the example password.
 
 **Attack path 3: a poisoned schema cache.** `fetch_schema.py:76-77` returns a file from
 `~/.cache/mobileconfig-builder/<branch>/` whenever it exists and `--refresh` is not set. No TTL, no
@@ -53,8 +59,9 @@ Out of scope: the MDM server, the device, Apple's own schema, and the device tru
 
 ## Trust Boundaries
 
-**The private signing key never enters this process.** It is passed by path and handed to
-`openssl smime` as an argv value (`build_mobileconfig.py:286-299`). Python never reads the file.
+**The private signing key never enters this process.** With `--sign-cert` it is passed by path and
+handed to `openssl smime` as an argv value. With `--sign-identity` it is never named at all: the
+key stays in the macOS keychain and `/usr/bin/security cms` signs inside it. Python reads neither.
 Keep it that way in any patch.
 
 **No private keys through chat.** The rule lives in `references/signing.md:50-54` and belongs in a
@@ -129,7 +136,10 @@ All open in `main` today.
   profile format, not a bug. Anything stricter happens before the spec and after the output.
 - **No payload encryption.** Per device payload encryption, the way an MDM does it, is missing.
 - **No judgment about your certificate.** EKU, expiry, key usage, chain and issuer trust are
-  unchecked. `openssl` signs with whatever you point it at.
+  unchecked. `openssl` signs with whatever you point it at, and `security cms` signs with whatever
+  identity you name. What the tool does check is that the result is a PKCS#7 structure that unpacks
+  back to exactly the profile it built, because `security cms -S` reports success on stderr-only
+  failures.
 - **No policy review.** Schema valid means keys and types match Apple's YAML. It says nothing about
   whether a device accepts the profile or whether the policy behind it makes sense.
 - **Unsigned profiles are for lab use.** Do not deploy them to production or through an MDM.

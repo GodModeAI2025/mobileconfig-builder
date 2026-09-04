@@ -8,6 +8,52 @@ Stelle, an der sie gepflegt wird: die CI prueft, dass hier ein Abschnitt mit
 derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 `v<VERSION>` heisst.
 
+## [Unreleased]
+
+### Hinzugefuegt
+
+- **Signieren ueber den macOS-Schluesselbund.** `--sign-identity <Name oder
+  SHA-1>` signiert mit `/usr/bin/security cms -S` statt mit `openssl`. Der
+  private Schluessel verlaesst den Schluesselbund nicht, was der Regelfall
+  ist, wenn das Signaturzertifikat per SCEP oder ADCS kommt und als nicht
+  exportierbar markiert ist. `--keychain` schickt Suche und Signierung in
+  einen bestimmten Schluesselbund statt in die Suchliste des Benutzers. Der
+  Weg gibt es nur auf macOS; auf anderen Plattformen endet der Aufruf mit
+  Exit 2 und dem Hinweis auf `--sign-cert`.
+- Eval 7 `signing-error-paths`: prueft die Fehlerpfade beider Signier-Wege
+  und laeuft auf jeder Plattform, weil der Erfolgsfall des
+  Schluesselbund-Wegs eine Identitaet im Schluesselbund braucht.
+
+### Behoben
+
+- **Kein unsigniertes Zwischenprodukt mehr auf der Platte.** Bisher schrieb
+  der Build `<output>.unsigned.mobileconfig`, rief openssl und loeschte die
+  Datei erst danach. Scheiterte der Aufruf, blieb sie mit Modus 0644 liegen,
+  samt WLAN-Passwort im Klartext, daneben eine leere `<output>` und ein
+  Traceback. Das Profil geht jetzt ueber stdin an das Signier-Werkzeug, eine
+  Zwischendatei entsteht gar nicht. Scheitert das Signieren, wird die
+  Ausgabedatei geloescht, sofern sie nicht schon vorher existierte, und der
+  Lauf endet mit Exit 2 und einer Meldung.
+- **Der Exit-Code von `security cms` wird nicht mehr geglaubt.** Findet es
+  die Identitaet nicht, meldet es den Fehler nur auf stderr, endet mit 0 und
+  hinterlaesst eine Datei mit null Bytes. Der Build prueft deshalb die
+  fertige Datei: nicht leer, faengt mit einer ASN.1-SEQUENCE an, und
+  `security cms -D` liefert Byte fuer Byte das gebaute Profil zurueck.
+- **`security cms` signierte mit SHA-1.** Ohne `-H SHA256` ist SHA-1 die
+  Vorgabe, nachgewiesen mit `openssl cms -cmsout -print`. Der Schalter ist
+  jetzt gesetzt.
+
+### Geaendert
+
+- Die Doku nennt fuer die Identitaetssuche `security find-identity -p smime`
+  oder `-p basic` statt `-p codesigning`. Ein Profil-Signer traegt die EKU
+  `emailProtection` oder gar keine einschraenkende EKU und faellt nicht unter
+  die Code-Signing-Policy. Auf einem eingerichteten Firmen-Mac enthaelt keine
+  der drei Listen die anderen.
+- SECURITY.md: Angriffspfad 2 (liegengebliebener Klartext) ist als
+  geschlossen dokumentiert, die Beschreibung der `.gitignore` in
+  Angriffspfad 1 entspricht wieder der Datei.
+
 ## [0.1.0] - 2026-09-04
 
 Erstes Release. Das Repo gab es vorher schon, veroeffentlicht war davon

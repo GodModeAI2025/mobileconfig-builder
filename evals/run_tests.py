@@ -87,6 +87,18 @@ def run_build(spec_path: Path, out_path: Path, *,
     return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
 
+def run_build_signiert(spec_path: Path, out_path: Path,
+                       zusatz: list[str]) -> subprocess.CompletedProcess:
+    """Build mit Signier-Flags. Eigenes Timeout, weil `security find-identity`
+    auf einem Mac mit Endpoint-Security-Agent spuerbar traeger ist als der
+    reine Bau."""
+    cmd = [
+        sys.executable, str(SCRIPTS / "build_mobileconfig.py"),
+        str(spec_path), "-o", str(out_path), "--offline", "--validate-strict",
+    ] + zusatz
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+
 def load_plist(path: Path) -> dict:
     with path.open("rb") as f:
         return plistlib.load(f)
@@ -410,6 +422,69 @@ def test_eval_6_unknown_top_level_key(workdir: Path) -> TestCase:
     return tc
 
 
+def test_eval_7_signing_error_paths(workdir: Path) -> TestCase:
+    """Fehlerpfade der Signierung, auf jeder Plattform pruefbar.
+
+    Der Erfolgsfall des Schluesselbund-Wegs laesst sich hier nicht pruefen: er
+    braucht eine Identitaet im Schluesselbund, und auf einem Linux-Runner gibt
+    es weder `security` noch einen Schluesselbund. Was sich pruefen laesst, ist
+    das Verhalten, wenn es schiefgeht, und genau daran hing der Fehler mit der
+    liegengebliebenen unsignierten Zwischendatei.
+    """
+    tc = TestCase(7, "signing-error-paths")
+    spec = ASSETS / "examples" / "wifi_guest.json"
+
+    # 1-4: unbekannte Identitaet
+    kc_dir = workdir / "keychain"
+    kc_dir.mkdir(exist_ok=True)
+    out = kc_dir / "keychain.mobileconfig"
+    unbekannt = "mobileconfig-builder-gibt-es-nicht-4711"
+    proc = run_build_signiert(spec, out, ["--sign-identity", unbekannt])
+    err = proc.stderr + proc.stdout
+
+    tc.check("Unbekannte Identitaet endet mit Exit 2",
+             proc.returncode == 2, f"returncode={proc.returncode}: {err[:200]}")
+    tc.check("Keine Ausgabedatei nach dem Fehlschlag", not out.exists())
+    tc.check("Meldung statt Traceback",
+             "Traceback (most recent call last)" not in err
+             and "FEHLER:" in err, dim(err[:200]))
+    if sys.platform == "darwin":
+        tc.check("Meldung nennt das Werkzeug und die angefragte Identitaet",
+                 "security cms" in err and unbekannt in err, dim(err[:300]))
+    else:
+        tc.check("Meldung nennt macOS und den PEM-Weg als Alternative",
+                 "macOS" in err and "--sign-cert" in err, dim(err[:300]))
+
+    # 5: die beiden Signier-Wege schliessen sich aus
+    misch = run_build_signiert(
+        spec, kc_dir / "misch.mobileconfig",
+        ["--sign-identity", unbekannt, "--sign-cert", str(kc_dir / "c.pem")])
+    misch_err = misch.stderr + misch.stdout
+    tc.check("--sign-identity und --sign-cert zusammen werden abgelehnt",
+             misch.returncode != 0
+             and "Traceback (most recent call last)" not in misch_err,
+             f"returncode={misch.returncode}: {misch_err[:200]}")
+
+    # 6-7: gescheitertes PEM-Signieren laesst nichts liegen. Das ist die
+    # Regression zum eigentlichen Fehler: frueher blieb
+    # <output>.unsigned.mobileconfig mit dem WLAN-Passwort im Klartext liegen.
+    pem_dir = workdir / "pemleck"
+    pem_dir.mkdir(exist_ok=True)
+    pem = run_build_signiert(
+        spec, pem_dir / "leak.mobileconfig",
+        ["--sign-cert", str(pem_dir / "gibtsnicht.pem"),
+         "--sign-key", str(pem_dir / "gibtsnicht.key")])
+    zurueck = sorted(p.name for p in pem_dir.iterdir())
+    klartext = [p.name for p in pem_dir.iterdir()
+                if p.is_file() and b"supersecret123" in p.read_bytes()]
+    tc.check("Gescheitertes PEM-Signieren laesst kein Klartext-Passwort "
+             "zurueck", not klartext, f"gefunden in {klartext}")
+    tc.check("Gescheitertes PEM-Signieren laesst gar keine Datei zurueck",
+             not zurueck,
+             f"returncode={pem.returncode}, uebrig: {zurueck}")
+    return tc
+
+
 # ─── Runner ────────────────────────────────────────────────────────────────
 def load_declared_expectations() -> dict[int, int]:
     """eval-id → Anzahl der in evals.json deklarierten Erwartungen."""
@@ -443,6 +518,7 @@ TESTS = {
     4: test_eval_4_invalid_input_rejected,
     5: test_eval_5_list_payload_types,
     6: test_eval_6_unknown_top_level_key,
+    7: test_eval_7_signing_error_paths,
 }
 
 

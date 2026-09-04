@@ -433,7 +433,7 @@
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ff9f0a" stroke-width="2"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                 </div>
                 <h3>PKCS#7 Signing</h3>
-                <p>Sign profiles with your X.509 certificate for production MDM deployment. The device shows a profile as verified once it trusts the signing CA; the install prompt stays either way. Unsigned belongs on your own test devices and nowhere else.</p>
+                <p>Sign profiles with your X.509 certificate for production MDM deployment, from PEM files through OpenSSL or from an identity in the macOS keychain, where the private key never leaves it. The device shows a profile as verified once it trusts the signing CA; the install prompt stays either way. Unsigned belongs on your own test devices and nowhere else.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon feature-icon-purple">
@@ -519,10 +519,16 @@
 <span class="code-comment"># Output:</span>
 <span class="code-string">  Unsigned profile written to guest-wifi.mobileconfig</span>
 
-<span class="code-comment"># Optional: sign for production</span>
+<span class="code-comment"># Optional: sign for production, from PEM files</span>
 <span class="code-cmd">python3</span> scripts/build_mobileconfig.py assets/examples/wifi_guest.json \
     -o guest-wifi.mobileconfig \
-    --sign-cert cert.pem --sign-key key.pem</pre>
+    --sign-cert cert.pem --sign-key key.pem
+
+<span class="code-comment"># ... or from a macOS keychain identity, key stays in the keychain</span>
+<span class="code-cmd">security</span> find-identity -v -p smime
+<span class="code-cmd">python3</span> scripts/build_mobileconfig.py assets/examples/wifi_guest.json \
+    -o guest-wifi.mobileconfig \
+    --sign-identity <span class="code-string">"Profile Signer 2026"</span></pre>
         </div>
     </section>
 

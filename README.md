@@ -17,7 +17,7 @@ This tool:
 1. **Fetches** the current YAML schemas from [github.com/apple/device-management](https://github.com/apple/device-management) (release branch)
 2. **Validates** every payload against the official schema (required keys, types, value ranges)
 3. **Builds** a correctly structured XML plist `.mobileconfig` file
-4. **Signs** (optional) with PKCS#7 using your X.509 certificate for production deployment
+4. **Signs** (optional) with PKCS#7, either from PEM files through OpenSSL or from an identity in the macOS keychain, where the private key never leaves the keychain
 
 ## Getting the Tool
 
@@ -113,7 +113,7 @@ Create a JSON file with your profile configuration:
 - **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile. A certificate payload carries a `<data>` key, so write that spec as YAML and pass the value with the `!!binary` tag; JSON has no bytes type, so a base64 string in a JSON spec is rejected with `--validate-strict` and, without that flag, written into the profile as a `<string>` where the schema expects `<data>`
 - **OS-aware inspection**: Filter keys by target platform (macOS, iOS, tvOS, etc.)
 - **Offline mode**: Works fully offline once schemas are cached
-- **Optional signing**: PKCS#7 signing with OpenSSL for production MDM deployment
+- **Optional signing**: PKCS#7 signing for production MDM deployment, either with OpenSSL from PEM files or with `security cms` from a keychain identity
 
 ## Signing
 
@@ -124,6 +124,10 @@ signature the device shows "Not Verified" at install time, nobody can tell who
 built the file, and whoever gets hold of it before installation can edit it.
 Plenty of MDM servers refuse unsigned profiles outright.
 
+There are two ways in, and they produce the same PKCS#7 DER file.
+
+From PEM files, through OpenSSL, on any platform:
+
 ```bash
 python3 scripts/build_mobileconfig.py spec.json \
   -o profile.mobileconfig \
@@ -132,11 +136,30 @@ python3 scripts/build_mobileconfig.py spec.json \
   --sign-ca ca-chain.pem
 ```
 
+From the macOS keychain, through `/usr/bin/security cms`, where the private
+key stays in the keychain. This is the usual case in a company, because a
+signing key that arrives by SCEP or ADCS is marked non-exportable and OpenSSL
+cannot read it at all:
+
+```bash
+security find-identity -v -p smime     # list the candidates
+python3 scripts/build_mobileconfig.py spec.json \
+  -o profile.mobileconfig \
+  --sign-identity "Profile Signer 2026"
+```
+
+Use `-p smime` or `-p basic` to find the identity, not `-p codesigning`. A
+profile signer carries the `emailProtection` EKU or no restricting EKU at
+all, so the code-signing policy hides it. On a managed Mac the three lists
+genuinely differ and none of them contains the others.
+
 The flag is optional, the practice is not. Signing also does not remove the
 install prompt: the device still asks the user to confirm, and it only shows
 the profile as verified when it already trusts the signing CA. A self-signed
 certificate without established trust looks the same as no signature at all.
-`references/signing.md` covers how to pick a certificate.
+`references/signing.md` covers how to pick a certificate, what the keychain
+access dialog does on the first call, and how to prepare a keychain for an
+unattended run.
 
 ## Handling Secrets
 
@@ -183,7 +206,7 @@ it complements a real scanner such as gitleaks rather than replacing it.
 ## Testing
 
 ```bash
-python3 evals/run_tests.py        # Run all 6 eval tests
+python3 evals/run_tests.py        # Run all 7 eval tests
 python3 evals/run_tests.py -v     # Verbose output
 python3 evals/run_tests.py --eval-id 4   # Run a single test
 ```
@@ -212,7 +235,7 @@ CI runs the same suite on every push and pull request against `main`, plus five 
 - **`<data>` fields need a YAML spec.** Keys of type `<data>` (embedded certificates, push tokens) expect raw bytes. YAML carries those with the `!!binary` tag and validates through. A JSON spec cannot: a plain base64 string fails as `expected <data>, got str`, and the `{"__base64__": "..."}` marker described in `references/data-fields.md` fails as `got dict`, because `build_mobileconfig.py` does not decode it yet.
 - **The schema cache never expires.** A cached file is served until you run `fetch_schema.py --refresh`. A payload type Apple adds shows up on the next online fetch because the file is missing locally, but keys Apple changes inside an existing file stay stale until a refresh.
 - **No validator for existing profiles.** The tool checks what it builds. Handing it a `.mobileconfig` from somewhere else is not supported.
-- **Signing needs OpenSSL.** `openssl smime` has to be in `PATH`. There is no fallback to `security cms` on macOS.
+- **Keychain signing is macOS only, and its success path is not in CI.** `--sign-identity` goes through `/usr/bin/security`, which exists on macOS and nowhere else; on any other platform it exits 2 and points at `--sign-cert`. Signing from PEM files still needs `openssl` in `PATH`. Eval 7 covers the failure paths of both on every platform. The success path of the keychain route was verified by hand against a throwaway keychain, see the release notes for the commands.
 - **PyYAML is installed at runtime.** On first use the scripts run `pip install pyyaml` when the module is missing, and retry with `--break-system-packages` for a Python whose packages the system manages. If both attempts fail, the script names the pip command to run by hand and exits 2. On a locked-down machine, install it yourself first.
 - **Encrypted payloads are out of scope.** Apple allows a payload to be encrypted for one specific device. This tool writes plain text payloads only, which is why the secrets section below matters.
 - **DDM is not covered.** See the note below.
@@ -225,7 +248,6 @@ Candidates, in no particular order, and none of them promised:
 - Decode `{"__base64__": "..."}` in `build_mobileconfig.py` so `<data>` keys work from a JSON spec too.
 - A validate-only mode that takes an existing `.mobileconfig` and reports schema violations against the same rules.
 - Make the cache directory configurable through an environment variable instead of the fixed `~/.cache/mobileconfig-builder/`.
-- Signing on macOS without OpenSSL.
 - DDM declarations from `declarative/declarations/`, if the schema format there is close enough to reuse the validator.
 
 ## Note on Declarative Device Management (DDM)

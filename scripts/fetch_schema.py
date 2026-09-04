@@ -2,10 +2,12 @@
 """
 fetch_schema.py — Lädt Apple device-management Profil-Schemas und cached sie lokal.
 
-Quelle: https://github.com/apple/device-management (release branch).
-Es existiert KEIN separater Beta-Branch öffentlich — Apple veröffentlicht
-neue OS-Versionen direkt im release branch. Falls künftig ein Beta-Branch
-erscheint, kann dieser über --branch beta angefordert werden.
+Quelle: https://github.com/apple/device-management (Branch release).
+Neben release veröffentlicht Apple einen Seed-Branch für die kommende
+OS-Generation, derzeit seed_OS_27_0. Default bleibt release; der Seed-Stand
+kommt über --branch seed_OS_27_0 und landet in einem eigenen Cache-Ordner.
+Welche Branches es gerade gibt, zeigt
+  git ls-remote --heads https://github.com/apple/device-management.git
 
 Usage:
     python3 fetch_schema.py                 # alle Profile-Schemas (cached)
@@ -52,7 +54,10 @@ def list_remote_profiles(branch: str) -> list[str]:
     except urllib.error.HTTPError as e:
         if e.code == 404 and branch != "release":
             raise SystemExit(
-                f"Branch '{branch}' existiert nicht. Bekannter Branch: 'release'."
+                f"Branch '{branch}' existiert nicht. Bekannt sind 'release' "
+                f"und der jeweilige Seed-Branch, z.B. 'seed_OS_27_0'. "
+                f"Aktuelle Liste: git ls-remote --heads "
+                f"https://github.com/apple/device-management.git"
             )
         raise
     return sorted(item["name"] for item in data

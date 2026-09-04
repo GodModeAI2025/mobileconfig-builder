@@ -1,19 +1,19 @@
 ---
 name: mobileconfig-builder
-description: "Erstellt produktionsreife .mobileconfig-Dateien (Apple Configuration Profiles) für macOS, iOS, iPadOS, tvOS, watchOS und visionOS. Holt Schema/Aufbau live aus github.com/apple/device-management (release branch) und validiert jeden Payload gegen das aktuelle YAML-Schema. Führt bei Bedarf einen Interview-Flow (Plattform → PayloadType → Pflichtfelder) und erzeugt eine korrekt strukturierte, optional PKCS#7-signierte .mobileconfig zum Direkt-Aufspielen via MDM, Profile Manager, AirDrop oder USB. Verwende diesen Skill, sobald Apple-Geräte konfiguriert werden sollen — auch ohne das Wort 'mobileconfig'. Trigger sind etwa 'Configuration Profile', 'MDM-Profil', 'WLAN/VPN/Mail-Profil für Mac/iPad', 'Restrictions', 'Apple Intelligence deaktivieren', 'FileVault per Profil', 'Software-Update-Policy', 'TCC/Privacy Permissions', 'Profil signieren', 'PayloadType com.apple.*', 'managed preferences', 'auf Gerät spielen'. Auch bei einzelner Einstellung, die per Profil erzwungen werden soll."
+description: "Erstellt produktionsreife .mobileconfig-Dateien (Apple Configuration Profiles) für macOS, iOS, iPadOS, tvOS, watchOS und visionOS. Holt die YAML-Schemas aus github.com/apple/device-management (Branch `release`) in einen lokalen Cache und validiert jeden Payload gegen diesen Cache-Stand, der liegen bleibt, bis `fetch_schema.py --refresh` ihn neu holt. Führt bei Bedarf einen Interview-Flow (Plattform → PayloadType → Pflichtfelder) und erzeugt eine korrekt strukturierte, optional PKCS#7-signierte .mobileconfig zum Direkt-Aufspielen via MDM, Profile Manager, AirDrop oder USB. Verwende diesen Skill, sobald Apple-Geräte konfiguriert werden sollen — auch ohne das Wort 'mobileconfig'. Trigger sind etwa 'Configuration Profile', 'MDM-Profil', 'WLAN/VPN/Mail-Profil für Mac/iPad', 'Restrictions', 'Apple Intelligence deaktivieren', 'FileVault per Profil', 'Software-Update-Policy', 'TCC/Privacy Permissions', 'Profil signieren', 'PayloadType com.apple.*', 'managed preferences', 'auf Gerät spielen'. Auch bei einzelner Einstellung, die per Profil erzwungen werden soll."
 ---
 
 # mobileconfig-builder
 
-Generiert valide `.mobileconfig`-Dateien aus dem aktuellen Apple Device Management Schema.
+Generiert valide `.mobileconfig`-Dateien gegen das Apple Device Management Schema.
 
 ## Was dieser Skill macht
 
 `.mobileconfig`-Dateien sind Apple Configuration Profiles: signierte oder unsignierte XML-Property-Lists, die ein iPhone, iPad, Mac, Apple TV oder eine Apple Watch konfigurieren — von WLAN über VPN, E-Mail, Zertifikaten, Restrictions bis zu Software-Update-Policies. Sie werden über MDM, Apple Configurator, AirDrop, USB oder per Doppelklick auf das Gerät gespielt.
 
-Die offiziell maßgebliche Quelle für die Struktur dieser Profile ist **[github.com/apple/device-management](https://github.com/apple/device-management)** (default-Branch: `release`). Dort liegen für jeden Profile-Type eine YAML-Schema-Datei mit allen Keys, Required-Markern, Typen, Wertebereichen und OS-Support-Matrix. Dieser Skill arbeitet direkt gegen dieses Schema, statt auf trainierte Erinnerung an die Apple-Doku zu verlassen — d.h. er kennt immer den aktuellen Stand.
+Die offiziell maßgebliche Quelle für die Struktur dieser Profile ist **[github.com/apple/device-management](https://github.com/apple/device-management)** (default-Branch: `release`). Dort liegen für jeden Profile-Type eine YAML-Schema-Datei mit allen Keys, Required-Markern, Typen, Wertebereichen und OS-Support-Matrix. Dieser Skill arbeitet gegen dieses Schema, statt sich auf trainierte Erinnerung an die Apple-Doku zu verlassen. Er liest es aus einem lokalen Cache unter `~/.cache/mobileconfig-builder/<branch>/`. Eine einmal geladene Datei bleibt dort liegen, ohne Ablauf und ohne ETag-Vergleich, bis `fetch_schema.py --refresh` sie neu holt, und der Workflow unten läuft mit `--offline` bewusst nur gegen den Cache. Der Stand ist also so aktuell wie der letzte Fetch.
 
-**Branch-Strategie:** Apple veröffentlicht öffentlich nur den `release`-Branch. Falls künftig ein Beta-Branch erscheint, fragt Claude beim ersten Lauf nach. Ohne expliziten Wunsch wird `release` verwendet.
+**Branch-Strategie:** Apple veröffentlicht neben `release` einen Seed-Branch für die kommende OS-Generation, derzeit `seed_OS_27_0`. Welche Branches gerade existieren, zeigt `git ls-remote --heads https://github.com/apple/device-management.git`. Default ist `release`; den Seed-Stand holen die Skripte mit `--branch seed_OS_27_0` in ein eigenes Cache-Verzeichnis. Frag den User nur dann nach dem Branch, wenn er von Beta- oder Seed-Versionen spricht.
 
 ## Wann diesen Skill verwenden
 
@@ -76,7 +76,7 @@ Wähle den/die passenden `PayloadType`(s). Häufige:
 | Exchange | `com.apple.eas.account` |
 | Restrictions iOS/iPadOS | `com.apple.applicationaccess` |
 | Restrictions macOS | `com.apple.applicationaccess.new` |
-| Zertifikat | `com.apple.security.pkcs1` / `.pkcs12` / `.root` |
+| Zertifikat | `com.apple.security.pkcs1` / `.pkcs12` / `.root` (Spec als YAML, siehe Spezialfälle) |
 | FileVault | `com.apple.MCX.FileVault2` |
 | Software-Update | `com.apple.SoftwareUpdate` |
 | Profile Removal Password | `com.apple.profileRemovalPassword` |
@@ -145,7 +145,7 @@ Erzeuge eine JSON-Spec im folgenden Format:
 }
 ```
 
-Speichere als `<projektname>.json`.
+Speichere als `<projektname>.json`. Sobald ein Payload ein `<data>`-Feld braucht, etwa bei Zertifikaten, schreib die Spec stattdessen als YAML (siehe Spezialfälle).
 
 ### Schritt 6 — Build & Validierung
 
@@ -157,9 +157,13 @@ Strikt geprüft wird nicht nur jede Payload gegen ihr eigenes Schema, sondern au
 
 Bei Validierungsfehlern korrigiere die Spec mit dem User. Nicht-strikt (`ohne --validate-strict`) lässt unbekannte Keys durch — manchmal nötig, wenn Apple einen Key dokumentiert, der noch nicht im Schema ist; aber das ist die Ausnahme.
 
-### Schritt 7 — Optional: Signieren
+### Schritt 7 — Signieren
 
-Apple-Geräte zeigen unsignierte Profile als „nicht signiert / nicht verifiziert" an. Für produktiven Einsatz mit X.509-Zertifikat signieren:
+**Regel: unsigniert nur im Labor.** Ein unsigniertes Profil ist zum Ausprobieren auf eigenen Testgeräten da, sonst nirgends. Alles, was auf ein fremdes Gerät, in eine Flotte oder auf einen MDM-Server geht, wird signiert. Ohne Signatur zeigt das Gerät beim Installieren „nicht verifiziert", niemand kann prüfen, wer das Profil gebaut hat, und wer die Datei vor der Installation in die Hände bekommt, kann sie ändern. Viele MDM-Server nehmen unsignierte Profile ohnehin nicht an.
+
+Wenn der User kein Zertifikat hat und trotzdem ausrollen will: nicht stillschweigend unsigniert liefern, sondern die Regel nennen und auf `references/signing.md` verweisen. Signieren ersetzt den Installationsdialog nicht; das Gerät fragt weiter nach und zeigt das Profil nur dann als verifiziert, wenn es der signierenden CA vertraut.
+
+Mit X.509-Zertifikat signieren:
 
 ```bash
 python3 scripts/build_mobileconfig.py spec.json \
@@ -185,18 +189,22 @@ Datei dem User geben (`present_files`) und kurz erklären:
 - **MDM-Distribution:** Profil in Jamf, Kandji, Mosyle, Intune, Profile Manager etc. importieren
 - **Bei MDM-Push:** muss meist signiert sein, je nach MDM-Server
 
+**Geheimnisse:** Die erzeugte Datei enthält jedes Passwort und jedes Shared Secret im Klartext, das Plist ist unverschlüsselt. Genauso die Spec-Datei, aus der sie gebaut wurde. Beide gehören nicht in ein Git-Repo, nicht in einen Chat-Verlauf und nicht in einen geteilten Ordner. Sag dem User beim Ausliefern, wo die Datei liegt und dass er sie nach dem Import ins MDM löschen oder dorthin legen soll, wo seine übrigen Zugangsdaten liegen. Wenn eine Spec versehentlich im Repo landet: `python3 tools/scan_secrets.py` findet sie.
+
 ## Spezialfälle
 
 ### Daten-Felder (`<data>`)
 
-Schema-Type `<data>` (z.B. eingebettete Zertifikate, Push-Token) erwarten Bytes. In der JSON-Spec als Base64-String mit Marker übergeben:
+Schema-Type `<data>` (z.B. eingebettete Zertifikate, Push-Token) erwarten Bytes. JSON kennt keinen Bytes-Typ, deshalb scheitert jede JSON-Spec an so einem Feld: der Validator meldet `expected <data>, got str` beim reinen Base64-String und `expected <data>, got dict` beim `{"__base64__": ...}`-Marker, mit `--validate-strict` bricht der Build dann mit Exit-Code 2 ab. Schreib die Spec in diesem Fall als YAML und übergib den Wert mit dem `!!binary`-Tag:
 
-```json
-{ "PayloadCertificateFileName": "ca.cer",
-  "PayloadContent": {"__base64__": "MIIDXTCC..."} }
+```yaml
+payloads:
+  - PayloadType: com.apple.security.pkcs12
+    PayloadContent: !!binary |
+      MIIDXTCC...
 ```
 
-`build_mobileconfig.py` erkennt `__base64__`-Marker noch nicht out-of-the-box — das ist eine bewusste Ausbaustelle. Wenn ein Profil `<data>`-Felder braucht, kann Claude die Spec vor dem Build durch einen kleinen Pre-Processor jagen, der `{"__base64__": "..."}` in echte Bytes konvertiert (siehe `references/data-fields.md`).
+`build_mobileconfig.py` liest YAML-Specs direkt, PyYAML macht aus dem Tag echte Bytes, und in der Plist steht ein `<data>`-Element. Damit bauen auch Zertifikats-Payloads strikt validiert durch. Den `{"__base64__": "..."}`-Marker aus `references/data-fields.md` erkennt der Builder dagegen nicht; er ist eine Ausbaustelle, keine funktionierende Abkürzung.
 
 ### Mehrfach-Payloads
 
@@ -214,6 +222,7 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 | `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter und Required-Only. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
 | `evals/run_tests.py` | Regressions-Test-Suite mit 6 realistischen Test-Cases (siehe unten). |
+| `tools/scan_secrets.py` | Prüft die verfolgten Dateien auf eingecheckte Profile, Schlüsseldateien, PEM-Blöcke und Passwortwerte. Läuft auch in der CI. |
 
 ## Beispiele
 

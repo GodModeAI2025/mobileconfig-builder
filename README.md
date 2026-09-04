@@ -1,6 +1,12 @@
 # mobileconfig-builder
 
+[![CI](https://github.com/GodModeAI2025/mobileconfig-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/GodModeAI2025/mobileconfig-builder/actions/workflows/ci.yml)
+
 Generate production-ready `.mobileconfig` files (Apple Configuration Profiles) for macOS, iOS, iPadOS, tvOS, watchOS, and visionOS — validated against Apple's official device-management schema.
+
+**Who it is for:** MDM and Apple admins. If you keep a fleet running in Jamf Pro or Microsoft Intune, in Kandji, Mosyle, or Apple Profile Manager, and you need a profile whose keys are right the first time, this is aimed at you.
+
+**Two ways to use it.** `SKILL.md` makes this repository a Claude skill: Claude reads the workflow there, asks for platform, payload type, and the required keys, and hands back a finished profile. `scripts/` makes it a command line tool for people: three Python scripts you run in a terminal or wire into your own pipeline, with no Claude involved. Both paths call the same code and share the same schema cache.
 
 ## What it does
 
@@ -65,17 +71,25 @@ Create a JSON file with your profile configuration:
 | `scripts/fetch_schema.py` | Fetches and caches YAML schemas from Apple's GitHub repo. Supports `--offline`, `--from-clone`, `--list`, `--refresh`. |
 | `scripts/inspect_payload.py` | Displays keys, required fields, types, and allowed values for any PayloadType. Supports OS filtering. |
 | `scripts/build_mobileconfig.py` | Builds and validates the profile. Outputs unsigned or PKCS#7-signed `.mobileconfig`. |
+| `tools/scan_secrets.py` | Repository check, not part of the build workflow. Looks for committed profiles, key files, PEM blocks, and password values that are not documented placeholders. Runs in CI. |
 
 ## Features
 
 - **Schema-validated**: Every key checked against Apple's official YAML definitions, top-level fields against `TopLevel.yaml` and each payload against its own schema
 - **Deterministic UUIDs**: Same input always produces the same UUIDs (safe for re-deployment)
-- **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile
+- **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile. A certificate payload carries a `<data>` key, so write that spec as YAML and pass the value with the `!!binary` tag; JSON has no bytes type, so a base64 string in a JSON spec is rejected with `--validate-strict` and, without that flag, written into the profile as a `<string>` where the schema expects `<data>`
 - **OS-aware inspection**: Filter keys by target platform (macOS, iOS, tvOS, etc.)
 - **Offline mode**: Works fully offline once schemas are cached
 - **Optional signing**: PKCS#7 signing with OpenSSL for production MDM deployment
 
-## Signing (Optional)
+## Signing
+
+**Rule: unsigned is for the lab.** An unsigned profile is fine while you are
+iterating on a spec on your own test devices. Anything that leaves that bench,
+for a colleague's Mac, a fleet, or an MDM server, gets signed. Without a
+signature the device shows "Not Verified" at install time, nobody can tell who
+built the file, and whoever gets hold of it before installation can edit it.
+Plenty of MDM servers refuse unsigned profiles outright.
 
 ```bash
 python3 scripts/build_mobileconfig.py spec.json \
@@ -85,7 +99,42 @@ python3 scripts/build_mobileconfig.py spec.json \
   --sign-ca ca-chain.pem
 ```
 
-Unsigned profiles show as "Not Verified" on Apple devices. For production/MDM use, sign with a trusted certificate.
+The flag is optional, the practice is not. Signing also does not remove the
+install prompt: the device still asks the user to confirm, and it only shows
+the profile as verified when it already trusts the signing CA. A self-signed
+certificate without established trust looks the same as no signature at all.
+`references/signing.md` covers how to pick a certificate.
+
+## Handling Secrets
+
+A configuration profile carries credentials in the clear. The Wi-Fi payload
+holds the network password, a VPN payload holds the shared secret, a mail
+payload holds account data. The XML plist stores all of it unencrypted, so a
+`.mobileconfig` file is exactly as sensitive as the passwords inside it, and
+so is the spec file it was built from.
+
+What that means in practice:
+
+- Write output outside the repository. The quick start above uses
+  `-o wifi.mobileconfig` in the current directory because it is short; in
+  real use, point `-o` at a path you control. `.gitignore` covers
+  `*.mobileconfig` and key material (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
+  `*.cer`, `*.crt`) as a backstop for the times you forget.
+- Treat spec files like the profiles they produce. A spec with a real Wi-Fi
+  password does not belong in version control either.
+- Never send a private key through a chat window. `SKILL.md` instructs Claude
+  to refuse that and ask for a file path on your machine instead.
+- Hand the profile to the MDM server, then delete the local copy, or keep it
+  where you keep other credentials.
+- The example specs under `assets/examples/` use invented passwords
+  (`supersecret123`, `schoolpass2026`). They are listed as placeholders in
+  `tools/scan_secrets.py`; any other value behind a key like `Password`,
+  `SharedSecret`, or `Passphrase` makes the scan and the CI job fail.
+
+Run the check yourself with `python3 tools/scan_secrets.py`. It reads only
+what `git ls-files` reports, needs no network, and prints file and line for
+every finding. It has no entropy heuristic and does not look at history, so
+it complements a real scanner such as gitleaks rather than replacing it.
 
 ## Installation on Devices
 
@@ -106,6 +155,10 @@ python3 evals/run_tests.py -v     # Verbose output
 python3 evals/run_tests.py --eval-id 4   # Run a single test
 ```
 
+The suite calls every script with `--offline`, so a populated schema cache is a prerequisite. Run `python3 scripts/fetch_schema.py` once, or fill the cache from a local clone with `--from-clone`.
+
+CI runs the same suite on every push and pull request against `main`, plus three checks outside the test runner: the invented top-level key sent straight through the CLI, a schema inspection of the Wi-Fi payload, and `tools/scan_secrets.py`. Eval 6 already covers the top-level rejection inside the suite; the CI step asserts the same contract at the shell level, where the exit code and the missing output file are what a caller actually sees. The Wi-Fi inspection is the only coverage `inspect_payload.py` gets, since no eval calls it. The Apple schema is pinned to a fixed commit, so a change upstream cannot turn the build red by itself. Bumping that commit is a deliberate edit in `.github/workflows/ci.yml`.
+
 ## Common PayloadTypes
 
 | Use Case | PayloadType |
@@ -120,6 +173,27 @@ python3 evals/run_tests.py --eval-id 4   # Run a single test
 | FileVault | `com.apple.MCX.FileVault2` |
 | Software Update | `com.apple.SoftwareUpdate` |
 | Privacy/TCC | `com.apple.TCC.configuration-profile-policy` |
+
+## Limitations
+
+- **`<data>` fields need a YAML spec.** Keys of type `<data>` (embedded certificates, push tokens) expect raw bytes. YAML carries those with the `!!binary` tag and validates through. A JSON spec cannot: a plain base64 string fails as `expected <data>, got str`, and the `{"__base64__": "..."}` marker described in `references/data-fields.md` fails as `got dict`, because `build_mobileconfig.py` does not decode it yet.
+- **The schema cache never expires.** A cached file is served until you run `fetch_schema.py --refresh`. A payload type Apple adds shows up on the next online fetch because the file is missing locally, but keys Apple changes inside an existing file stay stale until a refresh.
+- **No validator for existing profiles.** The tool checks what it builds. Handing it a `.mobileconfig` from somewhere else is not supported.
+- **Signing needs OpenSSL.** `openssl smime` has to be in `PATH`. There is no fallback to `security cms` on macOS.
+- **PyYAML is installed at runtime.** On first use the scripts run `pip install pyyaml` when the module is missing. On a locked-down machine, install it yourself first.
+- **Encrypted payloads are out of scope.** Apple allows a payload to be encrypted for one specific device. This tool writes plain text payloads only, which is why the secrets section below matters.
+- **DDM is not covered.** See the note below.
+- **CI covers one Python version.** The workflow runs on Python 3.12 against a pinned schema commit. Python 3.9, which the requirements section claims as the floor, and the current Apple schema are checked by hand.
+
+## Roadmap
+
+Candidates, in no particular order, and none of them promised:
+
+- Decode `{"__base64__": "..."}` in `build_mobileconfig.py` so `<data>` keys work from a JSON spec too.
+- A validate-only mode that takes an existing `.mobileconfig` and reports schema violations against the same rules.
+- Make the cache directory configurable through an environment variable instead of the fixed `~/.cache/mobileconfig-builder/`.
+- Signing on macOS without OpenSSL.
+- DDM declarations from `declarative/declarations/`, if the schema format there is close enough to reuse the validator.
 
 ## Note on Declarative Device Management (DDM)
 

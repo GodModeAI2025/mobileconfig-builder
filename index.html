@@ -495,10 +495,17 @@
     <section class="code-section" id="quickstart">
         <div class="section-header">
             <h2>Quick Start</h2>
-            <p>From zero to a validated profile in under a minute.</p>
+            <p>Clone the repository or take the release archive. Both give you the same scripts.</p>
         </div>
         <div class="code-block">
-            <pre><span class="code-comment"># Fetch Apple's official profile schemas</span>
+            <pre><span class="code-comment"># Get it: clone the repository ...</span>
+<span class="code-cmd">git</span> clone https://github.com/GodModeAI2025/mobileconfig-builder.git
+
+<span class="code-comment"># ... or download the release archive (SKILL.md, references/, scripts/, assets/, evals/)</span>
+<span class="code-comment"># The link points at the newest published release, so it 404s until there is one.</span>
+<span class="code-cmd">curl</span> -LO https://github.com/GodModeAI2025/mobileconfig-builder/releases/latest/download/mobileconfig-builder.zip
+
+<span class="code-comment"># Fetch Apple's official profile schemas</span>
 <span class="code-cmd">python3</span> scripts/fetch_schema.py
 
 <span class="code-comment"># See what keys a Wi-Fi profile needs</span>

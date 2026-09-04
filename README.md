@@ -285,11 +285,47 @@ Candidates, in no particular order, and none of them promised:
 - Decode `{"__base64__": "..."}` in `build_mobileconfig.py` so `<data>` keys work from a JSON spec too.
 - A validate-only mode that takes an existing `.mobileconfig` and reports schema violations against the same rules.
 - Make the cache directory configurable through an environment variable instead of the fixed `~/.cache/mobileconfig-builder/`.
-- DDM declarations from `declarative/declarations/`, if the schema format there is close enough to reuse the validator.
+- **DDM declarations from the same spec.** The biggest one, and the one that decides whether this tool still matters in two years. `references/ddm.md` has the full write-up; the short version is below.
 
-## Note on Declarative Device Management (DDM)
+## Declarative Device Management (DDM)
 
-Apple's newer DDM declarations use a different format (JSON, not `.mobileconfig`) and are pushed directly by the MDM server. This tool focuses on traditional Configuration Profiles. DDM support may be added in the future.
+Apple ships new functionality to DDM first. DDM declarations are JSON, not
+`.mobileconfig`, they live on the MDM server rather than in a file you can
+hand someone, and the device holds the state and reports back instead of
+installing a document. This tool builds Configuration Profiles and nothing
+else today.
+
+The interesting part is what a spec file actually is here. It describes
+intent, not a file format: a passcode policy, a Wi-Fi network, a set of
+restrictions. The same intent has a DDM shape, and Apple describes both sides
+in the same YAML format, with the same `payloadkeys`, `type`, `presence`,
+`range` and `subkeys` fields. The validator in this repository would work on
+declarations unchanged. One spec, two outputs, one set of rules.
+
+What stops that from being a weekend job:
+
+- **The mapping is a translation, not a rename.** For the passcode policy, 11
+  of 13 keys are pure renames (`forcePIN` to `RequirePasscode`), one inverts
+  its meaning (`allowSimple: false` equals `RequireComplexPasscode: true`),
+  and one moves its allowed range (`maxPINAgeInDays` starts at 1,
+  `MaximumPasscodeAgeInDays` at 0). A table that misses cases like these
+  produces output that is schema-valid and factually wrong.
+- **Most payloads have no counterpart.** The `release` branch has 121 payload
+  types under `mdm/profiles/` and 36 configuration declarations under
+  `declarative/declarations/configurations/`. Wi-Fi, VPN, certificates and the
+  whole restrictions family are not among them.
+- **`com.apple.configuration.legacy` is the honest bridge.** Its only required
+  key is `ProfileURL`: the declaration points at a profile that stays a
+  profile. A useful export would go native where it can and fall back to
+  `legacy` for the rest, and say which of the two happened for every payload.
+  An export that hides that difference is worse than none.
+
+Order of work, if it gets built: fetch the declaration schemas, then an
+`inspect_declaration.py`, then a hand-maintained mapping table, then the
+export. Step two already pays for itself, because it answers the question
+whether a given payload has a declaration at all. Locally only schema
+validity is testable; whether a device accepts a declaration shows up on an
+MDM server.
 
 ## Releases and Versioning
 

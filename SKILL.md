@@ -258,7 +258,27 @@ Top-Level `PayloadContent` ist ein Array. Beliebig viele Payloads sind erlaubt, 
 
 ### Declarative Device Management (DDM)
 
-Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Repo, **nicht** unter `mdm/profiles/`. Sie gehen nicht als `.mobileconfig`, sondern werden vom MDM-Server direkt als JSON-Deklarationen ans Gerät geschickt. Wenn der User danach fragt, weise ihn darauf hin — das ist ein anderer Workflow, den dieser Skill (noch) nicht abdeckt.
+Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Repo, **nicht** unter `mdm/profiles/`. Sie gehen nicht als `.mobileconfig`, sondern werden vom MDM-Server direkt als JSON-Deklarationen ans Gerät geschickt. Dieser Skill baut Profile und nichts sonst.
+
+Wenn der User danach fragt, sag ihm das, aber sag ihm auch, was der
+Unterschied praktisch bedeutet, statt nur abzugrenzen:
+
+- Apple beschreibt Profile und Declarations im **selben YAML-Format**, mit
+  denselben Feldern. Eine Spec beschreibt eine Absicht, kein Dateiformat, und
+  könnte beide Formate speisen. Der Validator hier würde unverändert laufen.
+- Für die meisten Payloads gibt es aber **keine Declaration**: der
+  `release`-Branch hat 121 PayloadTypes und 36 Configuration-Declarations. Wi-Fi,
+  VPN, Zertifikate und Restrictions sind nicht dabei.
+- Wo es beide gibt, ist die Abbildung eine Übersetzung und keine
+  Umbenennung. Beim Passcode heißt `allowSimple: false` in DDM
+  `RequireComplexPasscode: true`, also mit umgedrehtem Wert.
+- `com.apple.configuration.legacy` nimmt eine `ProfileURL` entgegen, ein
+  Profil bleibt darin ein Profil. Das ist der Weg, ein Profil in einer
+  DDM-Ausrollung zu benutzen, ohne so zu tun, als wäre es eine Declaration.
+
+Details in `references/ddm.md`. Behaupte nicht, der Skill könne DDM, und
+schreib keine Declaration von Hand zusammen, die nicht gegen ein Schema
+geprüft ist.
 
 ## Skript-Referenz
 
@@ -308,3 +328,4 @@ Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Ei
 - `references/payload-cheatsheet.md` — kuratierte Liste der wichtigsten PayloadTypes mit Beispiel-Keys
 - `references/signing.md` — Signieren über PEM-Dateien oder den macOS-Schlüsselbund, Zertifikatswahl, Trust-Chains, Fehlerdiagnose
 - `references/data-fields.md` — `<data>`-Felder und Base64
+- `references/ddm.md` — Declarative Device Management: was anders ist, was sich abbilden ließe und was nicht

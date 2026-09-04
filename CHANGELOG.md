@@ -83,6 +83,18 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   Vorgabe, nachgewiesen mit `openssl cms -cmsout -print`. Der Schalter ist
   jetzt gesetzt.
 
+- **DDM als Kapitel statt als Fussnote.** `references/ddm.md` beschreibt, was
+  Declarative Device Management anders macht, wie eine Spec beide
+  Ausgabeformate speisen koennte, woran die Abbildung haengt und in welcher
+  Reihenfolge ein Export gebaut wuerde. Belegt statt behauptet: der
+  `release`-Branch hat 121 PayloadTypes und 36 Configuration-Declarations,
+  beim Passcode sind elf von dreizehn Keys reine Umbenennungen, einer dreht
+  die Bedeutung um (`allowSimple: false` = `RequireComplexPasscode: true`),
+  einer verschiebt den Bereich, und `com.apple.configuration.legacy` nimmt
+  eine ProfileURL entgegen. Das README hat dafuer ein eigenes Kapitel statt
+  des bisherigen Dreizeilers, SKILL.md sagt beim Abgrenzen jetzt auch, was
+  der Unterschied praktisch bedeutet.
+
 ### Geaendert
 
 - Die Doku nennt fuer die Identitaetssuche `security find-identity -p smime`

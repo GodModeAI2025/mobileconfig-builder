@@ -228,6 +228,14 @@ def merge_schema_variants(payloadtype: str,
     merged["payloadkeys"] = [
         _merge_keydef(variants[name], len(filenames)) for name in order
     ]
+
+    # Titel und Beschreibung der Basisdatei beschreiben nur eine Variante und
+    # wären für die Vereinigung schlicht falsch.
+    titles = [docs_by_file[f].get("title", "") for f in filenames]
+    merged["title"] = " + ".join(t for t in titles if t)
+    descriptions = {docs_by_file[f].get("description", "") for f in filenames}
+    if len(descriptions) > 1:
+        merged["description"] = ""
     return merged
 
 

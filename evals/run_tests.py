@@ -93,8 +93,8 @@ def load_plist(path: Path) -> dict:
 
 
 def plist_parses(path: Path) -> tuple[bool, str]:
-    """(parsebar?, Detail) — ein kaputtes Plist soll ein roter Check sein,
-    kein Absturz des Runners."""
+    """Gibt (parsebar?, Detail) zurück. Ein kaputtes Plist soll ein roter
+    Check sein, kein Absturz des Runners."""
     try:
         load_plist(path)
         return True, ""

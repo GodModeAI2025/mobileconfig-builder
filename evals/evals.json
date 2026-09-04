@@ -94,7 +94,7 @@
     },
     {
       "id": 6,
-      "prompt": "In meiner Spec steht auf oberster Ebene ein Key, den Apple gar nicht kennt: 'TotallyMadeUpKey'. Bau das mit strikter Validierung \u2014 was passiert?",
+      "prompt": "In meiner Spec steht auf oberster Ebene ein Key, den Apple gar nicht kennt: 'TotallyMadeUpKey'. Bau das mit strikter Validierung. Was passiert?",
       "expected_output": "Strict-Mode-Build muss failen (Exit-Code 2) und den erfundenen Key als Top-Level-Problem benennen, nicht als Payload-Problem. Es darf keine .mobileconfig entstehen. Ohne --validate-strict laeuft derselbe Input weiter durch, das ist die dokumentierte Bedeutung des Flags. Specs, deren Top-Level-Keys alle aus TopLevel.yaml stammen, muessen unveraendert bauen.",
       "files": ["assets/examples/wifi_guest.json"],
       "expectations": [

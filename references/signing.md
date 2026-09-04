@@ -143,10 +143,20 @@ wurde. Mit `--keychain` ist das dieser eine, ohne die Suchliste des
 Benutzers. Ob `security cms` sich beim Signieren auf dieselbe Menge
 beschränkt, ist hier nicht gemessen und wird deshalb auch nicht zugesagt.
 
-**Nachher.** Die fertige Datei muss existieren, darf nicht leer sein, muss mit
-einer ASN.1-SEQUENCE anfangen, und der Inhalt wird mit `security cms -D`
-wieder ausgepackt und Byte für Byte mit dem gebauten Profil verglichen. Passt
-etwas davon nicht, wird die Datei gelöscht und der Lauf endet mit Exit 2.
+**Nachher.** Signiert wird in eine Temporärdatei im Zielverzeichnis. Sie muss
+existieren, darf nicht leer sein, muss mit einer ASN.1-SEQUENCE anfangen, und
+ihr Inhalt wird mit `security cms -D` wieder ausgepackt und Byte für Byte mit
+dem gebauten Profil verglichen. Erst danach schiebt `os.replace` sie an den
+Ausgabepfad. Passt etwas davon nicht, fliegt die Temporärdatei raus und der
+Lauf endet mit Exit 2.
+
+Der Umweg hat einen Grund, und der heißt zweiter Bau. `openssl -out` und
+`security cms -o` kürzen ihre Ausgabedatei schon beim Öffnen auf null Bytes.
+Wer auf denselben Pfad noch einmal baut und dabei am Signieren scheitert,
+hatte vorher ein gültiges Profil dort liegen und danach eine leere Datei, die
+aussieht wie ein fertiges Profil. Über die Temporärdatei sieht der
+Ausgabepfad nur ein Ergebnis, das jede Prüfung bestanden hat, oder er bleibt
+unangetastet.
 
 Ohne `-H SHA256` signiert `security cms` mit SHA-1. Das Werkzeug setzt den
 Schalter, nachgeprüft mit

@@ -80,9 +80,20 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   Datei erst danach. Scheiterte der Aufruf, blieb sie mit Modus 0644 liegen,
   samt WLAN-Passwort im Klartext, daneben eine leere `<output>` und ein
   Traceback. Das Profil geht jetzt ueber stdin an das Signier-Werkzeug, eine
-  Zwischendatei entsteht gar nicht. Scheitert das Signieren, wird die
-  Ausgabedatei geloescht, sofern sie nicht schon vorher existierte, und der
-  Lauf endet mit Exit 2 und einer Meldung.
+  Zwischendatei entsteht gar nicht. Scheitert das Signieren, endet der Lauf
+  mit Exit 2 und einer Meldung, und am Ausgabepfad bleibt nichts liegen.
+- **Der zweite Bau auf denselben Pfad vernichtete das alte Profil.**
+  `openssl -out` und `security cms -o` kuerzen ihre Ausgabedatei schon beim
+  Oeffnen auf null Bytes. Das Aufraeumen sprang nur an, wenn die Datei vorher
+  nicht existierte, also gerade nicht im haeufigsten Fall: dem zweiten Bau
+  nach einer Spec-Aenderung. Zurueck blieb eine leere .mobileconfig, die
+  aussieht wie ein fertiges Profil, und das zuvor gueltige war weg. Gemessen:
+  1378 Bytes vorher, 0 Bytes nachher. Signiert wird jetzt in eine
+  Temporaerdatei im Zielverzeichnis, und die kommt erst nach allen Pruefungen
+  per `os.replace` an den Zielpfad. Damit faellt auch die Frage weg, wann
+  geloescht werden darf, und die beiden bisher widerspruechlichen Regeln
+  (bedingtes Aufraeumen, bedingungsloses Loeschen nach `cms -D`) sind eine
+  geworden. Eval 7 hat dafuer einen achten Check.
 - **Der Exit-Code von `security cms` wird nicht mehr geglaubt.** Findet es
   die Identitaet nicht, meldet es den Fehler nur auf stderr, endet mit 0 und
   hinterlaesst eine Datei mit null Bytes. Unter Last endet es danach gar

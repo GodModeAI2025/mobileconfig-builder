@@ -109,7 +109,7 @@
     {
       "id": 7,
       "prompt": "Ich will ueber den macOS-Schluesselbund signieren, gebe aber eine Identitaet an, die es nicht gibt. Und in einem zweiten Versuch zeige ich mit --sign-cert auf eine PEM-Datei, die nicht existiert. Was macht das Werkzeug?",
-      "expected_output": "Beide Faelle enden mit Exit-Code 2 und einer Meldung statt eines Tracebacks, und in beiden Faellen bleibt keine Datei zurueck. Besonders darf keine unsignierte Zwischendatei mit dem WLAN-Passwort im Klartext liegenbleiben. Auf macOS nennt die Meldung `security cms` und die angefragte Identitaet, auf anderen Plattformen sagt sie, dass der Schluesselbund-Weg macOS braucht und --sign-cert die Alternative ist. --sign-identity zusammen mit --sign-cert wird als Fehlbedienung abgelehnt.",
+      "expected_output": "Beide Faelle enden mit Exit-Code 2 und einer Meldung statt eines Tracebacks, und in beiden Faellen bleibt keine Datei zurueck. Besonders darf keine unsignierte Zwischendatei mit dem WLAN-Passwort im Klartext liegenbleiben. Auf macOS nennt die Meldung `security cms` und die angefragte Identitaet, auf anderen Plattformen sagt sie, dass der Schluesselbund-Weg macOS braucht und --sign-cert die Alternative ist. --sign-identity zusammen mit --sign-cert wird als Fehlbedienung abgelehnt. Und beim zweiten Bau auf denselben Pfad bleibt das dort liegende gueltige Profil unversehrt, wenn das Signieren scheitert.",
       "files": ["assets/examples/wifi_guest.json"],
       "expectations": [
         "Unknown keychain identity exits with code 2",
@@ -118,7 +118,8 @@
         "On macOS the message names security cms and the requested identity; on other platforms it names macOS and points to --sign-cert",
         "--sign-identity together with --sign-cert is rejected without a traceback",
         "A failed PEM signing leaves no file containing the cleartext password",
-        "A failed PEM signing leaves no file at all in the output directory"
+        "A failed PEM signing leaves no file at all in the output directory",
+        "A failed signing run leaves an existing profile at the output path byte-for-byte unchanged"
       ]
     },
     {

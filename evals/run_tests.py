@@ -438,6 +438,22 @@ def test_eval_7_signing_error_paths(workdir: Path) -> TestCase:
     es weder `security` noch einen Schluesselbund. Was sich pruefen laesst, ist
     das Verhalten, wenn es schiefgeht, und genau daran hing der Fehler mit der
     liegengebliebenen unsignierten Zwischendatei.
+
+    Was welcher Check deckt, damit niemand mehr daraus liest als drinsteht:
+
+    Die Checks 1 bis 4 pruefen die Vorabpruefung, nicht das Aufraeumen.
+    resolve_identity lehnt die erfundene Identitaet ab, bevor irgendeine Datei
+    angelegt wird. "Keine Ausgabedatei nach dem Fehlschlag" ist dort deshalb
+    trivial wahr und waere auch ohne jedes Aufraeumen gruen. Der Wert dieser
+    Checks liegt woanders: der Bau bricht mit Meldung ab, statt in `security
+    cms` haengenzubleiben.
+
+    Die Checks 6 bis 8 pruefen den Ausgabepfad wirklich. Sie gehen ueber
+    `openssl`, das erst startet und dann scheitert, also genau die Lage
+    herstellt, in der frueher etwas liegenblieb. Check 8 nimmt den zweiten Bau
+    auf denselben Pfad dazu: `openssl -out` kuerzt seine Ausgabedatei schon
+    beim Oeffnen, und bis Welle 5 war das zuvor dort liegende gueltige Profil
+    danach weg.
     """
     tc = TestCase(7, "signing-error-paths")
     spec = ASSETS / "examples" / "wifi_guest.json"
@@ -490,6 +506,24 @@ def test_eval_7_signing_error_paths(workdir: Path) -> TestCase:
     tc.check("Gescheitertes PEM-Signieren laesst gar keine Datei zurueck",
              not zurueck,
              f"returncode={pem.returncode}, uebrig: {zurueck}")
+
+    # 8: der zweite Bau auf denselben Pfad. Das ist der haeufigste Fall, und
+    # der einzige, in dem am Zielpfad ueberhaupt etwas zu verlieren ist.
+    zweit_dir = workdir / "zweiterlauf"
+    zweit_dir.mkdir(exist_ok=True)
+    ziel = zweit_dir / "profil.mobileconfig"
+    erst = run_build(spec, ziel, strict=True)
+    vorher = ziel.read_bytes() if ziel.exists() else b""
+    run_build_signiert(
+        spec, ziel,
+        ["--sign-cert", str(zweit_dir / "gibtsnicht.pem"),
+         "--sign-key", str(zweit_dir / "gibtsnicht.key")])
+    nachher = ziel.read_bytes() if ziel.exists() else b""
+    tc.check("Gescheitertes Signieren laesst ein vorhandenes Profil am "
+             "Zielpfad unveraendert",
+             erst.returncode == 0 and vorher and nachher == vorher,
+             f"vorher {len(vorher)} Bytes, nachher {len(nachher)} Bytes, "
+             f"uebrig: {sorted(p.name for p in zweit_dir.iterdir())}")
     return tc
 
 

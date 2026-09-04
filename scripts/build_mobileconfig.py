@@ -31,6 +31,7 @@ import plistlib
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -524,23 +525,25 @@ def resolve_identity(wunsch: str, keychain: Path | None = None) -> str:
     return wunsch
 
 
-def _aufraeumen(pfad: Path, bestand_vorher: bool) -> None:
-    """Löscht eine Ausgabedatei, die erst dieser Lauf angelegt hat.
+def _wie_das_werkzeug_es_angelegt_haette(pfad: Path) -> None:
+    """Setzt die Rechte, die openssl oder security selbst vergeben hätten.
 
-    Beide Signier-Werkzeuge legen ihre Ausgabedatei an, bevor sie scheitern.
-    Zurück bleibt sonst eine leere oder halbe .mobileconfig, die aussieht wie
-    ein fertiges Profil.
+    `mkstemp` legt mit 0600 an. Das wäre für ein Profil mit Klartext-Passwort
+    die bessere Wahl, ist aber nicht die Frage, die hier behandelt wird, und
+    ein stiller Rechtewechsel gehört nicht in eine Reparatur, die von
+    verlorenen Dateien handelt. Also dieselben Rechte wie vorher.
     """
-    if bestand_vorher:
-        return
+    maske = os.umask(0)
+    os.umask(maske)
     try:
-        pfad.unlink()
+        os.chmod(pfad, 0o666 & ~maske)
     except OSError:
         pass
 
 
-def _signieren(cmd: list[str], profil: bytes, signed_path: Path,
-               werkzeug: str, nachspann: str = "") -> None:
+def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
+               werkzeug: str, nachspann: str = "",
+               nachpruefung=None) -> None:
     """Ruft das Signier-Werkzeug und schickt das Profil über stdin.
 
     Über stdin, damit das unsignierte Profil mit seinen Klartext-Passwörtern
@@ -548,47 +551,76 @@ def _signieren(cmd: list[str], profil: bytes, signed_path: Path,
     `<output>.unsigned.mobileconfig` daneben und löschte sie nach dem
     Signieren. Scheiterte der Aufruf, blieb sie mit Modus 0644 liegen, samt
     WLAN-Passwort im Klartext.
-    """
-    bestand_vorher = signed_path.exists()
-    try:
-        proc = subprocess.run(cmd, input=profil, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE)
-    except OSError as fehler:
-        _aufraeumen(signed_path, bestand_vorher)
-        raise SchemaError(f"{cmd[0]} ließ sich nicht starten: {fehler}")
 
-    meldung = proc.stderr.decode("utf-8", "replace").strip()
-    if proc.returncode != 0:
-        _aufraeumen(signed_path, bestand_vorher)
-        text = f"{werkzeug} ist mit Exit {proc.returncode} gescheitert."
-        if meldung:
-            text += f"\n{meldung}"
-        if nachspann:
-            text += f"\n{nachspann}"
-        raise SchemaError(text)
-    # Der Exit-Code allein ist kein Beleg: `security cms -S` beendet sich mit
-    # 0, auch wenn es die Identität nicht findet, meldet den Fehler nur auf
-    # stderr und legt eine Datei mit null Bytes an. Deshalb wird das Ergebnis
-    # nachgesehen statt geglaubt.
-    if not signed_path.exists() or signed_path.stat().st_size == 0:
-        _aufraeumen(signed_path, bestand_vorher)
-        text = f"{werkzeug} meldet Exit 0, hat aber nichts nach " \
-               f"{signed_path} geschrieben."
-        if meldung:
-            text += f"\n{meldung}"
-        if nachspann:
-            text += f"\n{nachspann}"
-        raise SchemaError(text)
-    # CMS im DER-Format fängt mit einer ASN.1-SEQUENCE an (0x30). Was damit
-    # nicht anfängt, ist keine Signatur, sondern durchgereichter Input.
-    with signed_path.open("rb") as fh:
-        erstes_byte = fh.read(1)
-    if erstes_byte != b"\x30":
-        _aufraeumen(signed_path, bestand_vorher)
-        raise SchemaError(
-            f"{werkzeug} hat nach {signed_path} etwas geschrieben, das nicht "
-            f"mit einer ASN.1-SEQUENCE anfängt (erstes Byte "
-            f"{erstes_byte!r}). Das ist keine PKCS#7-Signatur.")
+    Signiert wird in eine Temporärdatei im Zielverzeichnis. An den Zielpfad
+    kommt sie erst, wenn jede Prüfung durch ist, und dann über `os.replace`.
+    Der Grund ist der zweite Bau auf denselben Pfad, also der Normalfall nach
+    einer Spec-Änderung: `openssl -out` und `security cms -o` kürzen ihre
+    Ausgabedatei schon beim Öffnen auf null Bytes. Scheiterte danach das
+    Signieren, blieb genau die leere .mobileconfig liegen, die hier
+    verhindert werden soll, und das zuvor dort liegende gültige Profil war
+    weg. Gemessen: 1378 Bytes gültiges Profil vorher, 0 Bytes nachher.
+
+    `cmd_bauen` bekommt den Pfad, auf den das Werkzeug schreiben soll, und
+    liefert die Befehlszeile. `nachpruefung` bekommt denselben Pfad und darf
+    werfen; sie läuft vor dem Verschieben, sonst landet eine verworfene
+    Signatur trotzdem für einen Moment auf dem Zielpfad und nimmt das alte
+    Profil mit.
+    """
+    signed_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, roh = tempfile.mkstemp(dir=str(signed_path.parent),
+                               prefix=signed_path.name + ".", suffix=".teil")
+    os.close(fd)
+    teil = Path(roh)
+    try:
+        cmd = cmd_bauen(teil)
+        try:
+            proc = subprocess.run(cmd, input=profil, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+        except OSError as fehler:
+            raise SchemaError(f"{cmd[0]} ließ sich nicht starten: {fehler}")
+
+        meldung = proc.stderr.decode("utf-8", "replace").strip()
+        if proc.returncode != 0:
+            text = f"{werkzeug} ist mit Exit {proc.returncode} gescheitert."
+            if meldung:
+                text += f"\n{meldung}"
+            if nachspann:
+                text += f"\n{nachspann}"
+            raise SchemaError(text)
+        # Der Exit-Code allein ist kein Beleg: `security cms -S` beendet sich
+        # mit 0, auch wenn es die Identität nicht findet, meldet den Fehler
+        # nur auf stderr und legt eine Datei mit null Bytes an. Deshalb wird
+        # das Ergebnis nachgesehen statt geglaubt.
+        if not teil.exists() or teil.stat().st_size == 0:
+            text = f"{werkzeug} meldet Exit 0, hat aber nichts nach " \
+                   f"{signed_path} geschrieben."
+            if meldung:
+                text += f"\n{meldung}"
+            if nachspann:
+                text += f"\n{nachspann}"
+            raise SchemaError(text)
+        # CMS im DER-Format fängt mit einer ASN.1-SEQUENCE an (0x30). Was
+        # damit nicht anfängt, ist keine Signatur, sondern durchgereichter
+        # Input.
+        with teil.open("rb") as fh:
+            erstes_byte = fh.read(1)
+        if erstes_byte != b"\x30":
+            raise SchemaError(
+                f"{werkzeug} hat nach {signed_path} etwas geschrieben, das "
+                f"nicht mit einer ASN.1-SEQUENCE anfängt (erstes Byte "
+                f"{erstes_byte!r}). Das ist keine PKCS#7-Signatur.")
+        if nachpruefung is not None:
+            nachpruefung(teil)
+        _wie_das_werkzeug_es_angelegt_haette(teil)
+        os.replace(teil, signed_path)
+    finally:
+        # Nach dem Verschieben gibt es die Temporärdatei nicht mehr, dann
+        # fällt das hier durch. Sonst raus damit, auch bei Ctrl-C.
+        try:
+            teil.unlink()
+        except OSError:
+            pass
 
 
 def sign_profile(profil: bytes, signed_path: Path,
@@ -599,14 +631,17 @@ def sign_profile(profil: bytes, signed_path: Path,
     `profil` sind die Bytes der unsignierten Plist. Sie gehen über stdin an
     openssl, es gibt keine unsignierte Zwischendatei.
     """
-    cmd = [
-        "openssl", "smime", "-sign", "-signer", str(cert),
-        "-inkey", str(key), "-nodetach", "-outform", "der",
-        "-out", str(signed_path),
-    ]
-    if ca_chain:
-        cmd += ["-certfile", str(ca_chain)]
-    _signieren(cmd, profil, signed_path, "openssl smime -sign")
+    def bauen(ziel: Path) -> list[str]:
+        cmd = [
+            "openssl", "smime", "-sign", "-signer", str(cert),
+            "-inkey", str(key), "-nodetach", "-outform", "der",
+            "-out", str(ziel),
+        ]
+        if ca_chain:
+            cmd += ["-certfile", str(ca_chain)]
+        return cmd
+
+    _signieren(bauen, profil, signed_path, "openssl smime -sign")
 
 
 def sign_profile_keychain(profil: bytes, signed_path: Path, identity: str,
@@ -626,18 +661,22 @@ def sign_profile_keychain(profil: bytes, signed_path: Path, identity: str,
             f"nur auf macOS. Auf {sys.platform} bleibt der Weg über "
             f"--sign-cert und --sign-key mit PEM-Dateien.")
     nickname = resolve_identity(identity, keychain=keychain)
-    cmd = [SECURITY_TOOL, "cms", "-S", "-N", nickname, "-H", "SHA256",
-           "-o", str(signed_path)]
-    if keychain:
-        cmd += ["-k", str(keychain)]
-    _signieren(cmd, profil, signed_path, "security cms -S",
+
+    def bauen(ziel: Path) -> list[str]:
+        cmd = [SECURITY_TOOL, "cms", "-S", "-N", nickname, "-H", "SHA256",
+               "-o", str(ziel)]
+        if keychain:
+            cmd += ["-k", str(keychain)]
+        return cmd
+
+    _signieren(bauen, profil, signed_path, "security cms -S",
                nachspann=(f"Angefragt war: {identity}\n"
                           + _identitaeten_text(list_identities(
-                              keychain=keychain))))
-    _pruefe_cms_inhalt(profil, signed_path)
+                              keychain=keychain))),
+               nachpruefung=lambda ziel: _pruefe_cms_inhalt(profil, ziel))
 
 
-def _pruefe_cms_inhalt(profil: bytes, signed_path: Path) -> None:
+def _pruefe_cms_inhalt(profil: bytes, signiert: Path) -> None:
     """Packt die Signatur wieder aus und vergleicht mit dem Original.
 
     `security cms -S` ist beim Melden von Fehlern unzuverlässig: es endet mit
@@ -648,18 +687,18 @@ def _pruefe_cms_inhalt(profil: bytes, signed_path: Path) -> None:
     Statt dem Werkzeug zu glauben, wird die fertige Datei mit
     `security cms -D` wieder ausgepackt. Stimmt der Inhalt nicht Byte für
     Byte mit dem Profil überein, fliegt die Datei raus.
+
+    Geprüft wird die Temporärdatei, bevor sie an den Zielpfad geschoben wird.
+    Löschen muss die Funktion deshalb nichts mehr: was hier durchfällt, hat
+    den Zielpfad nie gesehen.
     """
-    proc = subprocess.run([SECURITY_TOOL, "cms", "-D", "-i", str(signed_path)],
+    proc = subprocess.run([SECURITY_TOOL, "cms", "-D", "-i", str(signiert)],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode != 0 or proc.stdout != profil:
-        try:
-            signed_path.unlink()
-        except OSError:
-            pass
         meldung = proc.stderr.decode("utf-8", "replace").strip()
         raise SchemaError(
             "Die Signatur lässt sich nicht wieder auspacken oder enthält "
-            "nicht das gebaute Profil. Die Ausgabedatei wurde gelöscht."
+            "nicht das gebaute Profil. Es wurde nichts geschrieben."
             + (f"\n{meldung}" if meldung else ""))
 
 

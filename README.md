@@ -77,7 +77,7 @@ Create a JSON file with your profile configuration:
 
 - **Schema-validated**: Every key checked against Apple's official YAML definitions, top-level fields against `TopLevel.yaml` and each payload against its own schema
 - **Deterministic UUIDs**: Same input always produces the same UUIDs (safe for re-deployment)
-- **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile
+- **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile. A certificate payload carries a `<data>` key, so write that spec as YAML and pass the value with the `!!binary` tag; JSON has no bytes type and the build rejects it
 - **OS-aware inspection**: Filter keys by target platform (macOS, iOS, tvOS, etc.)
 - **Offline mode**: Works fully offline once schemas are cached
 - **Optional signing**: PKCS#7 signing with OpenSSL for production MDM deployment
@@ -176,7 +176,7 @@ CI runs the same suite on every push and pull request against `main`, plus three
 
 ## Limitations
 
-- **`<data>` fields need a pre-processor.** Keys of type `<data>` (embedded certificates, push tokens) expect raw bytes. The `{"__base64__": "..."}` marker described in `references/data-fields.md` is a convention for now; `build_mobileconfig.py` does not decode it yet.
+- **`<data>` fields need a YAML spec.** Keys of type `<data>` (embedded certificates, push tokens) expect raw bytes. YAML carries those with the `!!binary` tag and validates through. A JSON spec cannot: a plain base64 string fails as `expected <data>, got str`, and the `{"__base64__": "..."}` marker described in `references/data-fields.md` fails as `got dict`, because `build_mobileconfig.py` does not decode it yet.
 - **The schema cache never expires.** A cached file is served until you run `fetch_schema.py --refresh`. A payload type Apple adds shows up on the next online fetch because the file is missing locally, but keys Apple changes inside an existing file stay stale until a refresh.
 - **No validator for existing profiles.** The tool checks what it builds. Handing it a `.mobileconfig` from somewhere else is not supported.
 - **Signing needs OpenSSL.** `openssl smime` has to be in `PATH`. There is no fallback to `security cms` on macOS.
@@ -189,7 +189,7 @@ CI runs the same suite on every push and pull request against `main`, plus three
 
 Candidates, in no particular order, and none of them promised:
 
-- Decode `{"__base64__": "..."}` in `build_mobileconfig.py` so `<data>` keys work without a pre-processor.
+- Decode `{"__base64__": "..."}` in `build_mobileconfig.py` so `<data>` keys work from a JSON spec too.
 - A validate-only mode that takes an existing `.mobileconfig` and reports schema violations against the same rules.
 - Make the cache directory configurable through an environment variable instead of the fixed `~/.cache/mobileconfig-builder/`.
 - Signing on macOS without OpenSSL.

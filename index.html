@@ -454,7 +454,7 @@
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#30d158" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
                 </div>
                 <h3>Deterministic Output</h3>
-                <p>Same input always produces the same UUIDs and output. Safe for version control, diffing, and re-deployment without changing device state.</p>
+                <p>Same input always produces the same UUIDs and output, so a rebuild is byte-identical and re-deploying does not change device state. The profile itself stays out of version control: it holds every password in clear text, which is why the repository ships a <code>.gitignore</code> that blocks <code>*.mobileconfig</code> and a <code>tools/scan_secrets.py</code> that fails CI when one gets committed anyway.</p>
             </div>
         </div>
     </section>
@@ -556,7 +556,7 @@
     <section class="table-section">
         <div class="section-header">
             <h2>Supported Payload Types</h2>
-            <p>Every payload type in Apple's schema is supported. The exact count changes with each Apple update, so ask <code>fetch_schema.py --list</code> for it. Here are the most common ones.</p>
+            <p>Every payload type in Apple's schema validates and builds. The exact count changes with each Apple update, so ask <code>fetch_schema.py --list</code> for it. Payloads with a <code>&lt;data&gt;</code> key, certificates above all, need their spec written as YAML with the <code>!!binary</code> tag: JSON has no bytes type, and a base64 string in a JSON spec fails validation with exit code 2. Here are the most common ones.</p>
         </div>
         <div class="table-wrapper">
             <table class="payload-table">

@@ -20,18 +20,26 @@ from pathlib import Path
 
 # Reuse fetch_schema utilities
 sys.path.insert(0, str(Path(__file__).parent))
-from fetch_schema import index_payloads, load_schema_map  # noqa: E402
+from fetch_schema import (  # noqa: E402
+    MANIFESTS_REF,
+    index_payloads,
+    load_manifest_schema,
+    load_schema_map,
+)
 
 
 def find_schema(payloadtype: str, branch: str, refresh: bool = False,
-                offline: bool = False):
+                offline: bool = False, manifeste: dict | None = None):
     """Gibt (Quelldateien, Schema-Dokument) zurück.
 
     Nutzt dieselbe Auflösung wie build_mobileconfig.py: Dateien, die sich
-    einen payloadtype teilen, werden vereint statt willkürlich ausgewählt.
+    einen payloadtype teilen, werden vereint statt willkürlich ausgewählt,
+    und Apple gewinnt vor ProfileManifests.
     """
     schemas = load_schema_map(branch, refresh=refresh, offline=offline)
     doc = schemas.get(payloadtype)
+    if doc is None and manifeste is not None:
+        doc = load_manifest_schema(payloadtype, refresh=refresh, **manifeste)
     if doc is None:
         return [], None
     return doc.get("_sources", []), doc
@@ -127,15 +135,29 @@ def main():
     ap.add_argument("--required-only", action="store_true",
                     help="Nur required-Keys zeigen")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--manifests", action="store_true",
+                    help="Zweite Schema-Quelle ProfileManifests zulassen, "
+                         "fuer Domains, die Apple nicht beschreibt")
+    ap.add_argument("--manifests-ref", default=MANIFESTS_REF,
+                    help=f"Branch, Tag oder Commit von ProfileManifests "
+                         f"(default: {MANIFESTS_REF})")
     args = ap.parse_args()
 
+    manifeste = None
+    if args.manifests:
+        manifeste = {"ref": args.manifests_ref, "offline": args.offline}
+
     sources, doc = find_schema(args.payloadtype, args.branch,
-                               refresh=args.refresh, offline=args.offline)
+                               refresh=args.refresh, offline=args.offline,
+                               manifeste=manifeste)
     if doc is None:
         # fuzzy hint
         idx = index_payloads(args.branch, offline=args.offline)
         cands = [i for i in idx if args.payloadtype.lower() in i["payloadtype"].lower()]
         msg = f"Schema für PayloadType '{args.payloadtype}' nicht gefunden."
+        if manifeste is None and not args.payloadtype.startswith("com.apple."):
+            msg += ("\nApples Schema beschreibt nur Apple-Domains. Fuer "
+                    "Drittanbieter --manifests versuchen.")
         if cands:
             msg += "\nMeintest du:\n  " + "\n  ".join(c["payloadtype"]
                                                        for c in cands[:10])
@@ -153,6 +175,7 @@ def main():
             "description": doc.get("description"),
             "supportedOS": list(inherited_os.keys()),
             "supportedOS_detail": inherited_os,
+            "origin": doc.get("_origin", "apple/device-management"),
             "payloadkeys": doc.get("payloadkeys", []),
         }, indent=2, ensure_ascii=False))
         return
@@ -160,6 +183,11 @@ def main():
     print(f"# {doc.get('title','')}  ({payload.get('payloadtype')})")
     label = "Sources" if len(sources) > 1 else "Source"
     print(f"# {label}: {', '.join(sources)}")
+    if doc.get("_origin") == "ProfileManifests":
+        print("# Herkunft: ProfileManifests, gepflegt von Mac-Admins, nicht "
+              "von Apple, ohne Lizenzangabe.")
+        print("# Nicht uebernommen werden pfm_conditionals, pfm_exclude, "
+              "pfm_targets und pfm_app_min.")
     if len(sources) > 1:
         print(f"# {len(sources)} Schema-Dateien teilen sich diesen "
               f"PayloadType, die Keys sind hier vereint.")

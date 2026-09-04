@@ -14,12 +14,14 @@ Workflow:
   3. Ergänzt fehlende Pflichtfelder (PayloadIdentifier, PayloadUUID, PayloadVersion)
      deterministisch.
   4. Schreibt eine binäre+lesbare XML-Plist mit Endung .mobileconfig.
-  5. (Optional) Signiert mit OpenSSL, wenn cert/key übergeben werden.
+  5. (Optional) Signiert das Profil, entweder mit PEM-Dateien über OpenSSL
+     oder über eine Identität im macOS-Schlüsselbund.
 
 Usage:
     python3 build_mobileconfig.py spec.json -o profile.mobileconfig
     python3 build_mobileconfig.py spec.yaml -o profile.mobileconfig --validate-strict
     python3 build_mobileconfig.py spec.json -o p.mobileconfig --sign-cert cert.pem --sign-key key.pem
+    python3 build_mobileconfig.py spec.json -o p.mobileconfig --sign-identity "Profil-Signer"
 """
 from __future__ import annotations
 import argparse
@@ -29,12 +31,19 @@ import plistlib
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from fetch_schema import ensure_yaml, load_schema_map  # noqa: E402
+from fetch_schema import (  # noqa: E402
+    MANIFESTS_REF,
+    ensure_yaml,
+    ist_preference_domain,
+    load_manifest_schema,
+    load_schema_map,
+)
 
 ALLOWED_TYPES = {
     "<string>": (str,),
@@ -74,8 +83,20 @@ def load_all_schemas(branch: str, refresh: bool = False,
     return _SCHEMA_CACHE
 
 
-def get_schema(payloadtype: str, branch: str) -> dict | None:
-    return load_all_schemas(branch).get(payloadtype)
+def get_schema(payloadtype: str, branch: str,
+               manifeste: dict | None = None) -> dict | None:
+    """Schema zu einem PayloadType, Apple zuerst.
+
+    `manifeste` ist entweder None (nur Apple) oder ein Dict mit den Optionen
+    fuer ProfileManifests. Apple gewinnt immer: die zweite Quelle wird nur
+    gefragt, wenn Apple den PayloadType ueberhaupt nicht kennt. Zusammengefuehrt
+    wird nichts. Ein PayloadType, den beide beschreiben, wird ausschliesslich
+    gegen Apple geprueft, damit nie unklar ist, welche Regel gegolten hat.
+    """
+    schema = load_all_schemas(branch).get(payloadtype)
+    if schema is not None or manifeste is None:
+        return schema
+    return load_manifest_schema(payloadtype, **manifeste)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -177,17 +198,30 @@ def get_common_keys(branch: str) -> list[dict]:
 
 
 def validate_payload(payload: dict, branch: str,
-                     strict: bool = False) -> list[str]:
+                     strict: bool = False,
+                     manifeste: dict | None = None) -> list[str]:
     """Returns list of error strings; empty means valid."""
     errors: list[str] = []
     ptype = payload.get("PayloadType")
     if not ptype:
         return ["payload: missing PayloadType"]
-    schema = get_schema(ptype, branch)
+    schema = get_schema(ptype, branch, manifeste=manifeste)
     if schema is None:
+        hinweis = ""
+        if manifeste is None and not ptype.startswith("com.apple."):
+            hinweis = (". Apples Schema beschreibt nur Apple-Domains, "
+                       "fuer Drittanbieter --manifests versuchen")
+        elif manifeste is not None and not ist_preference_domain(ptype):
+            hinweis = (". Das sieht nicht wie eine Preference-Domain aus, "
+                       "deshalb wird ProfileManifests danach gar nicht erst "
+                       "gefragt: der Name wird dort zu einem Dateinamen")
+        elif manifeste is not None and manifeste.get("offline"):
+            hinweis = (". Mit --offline wird nur der Manifest-Cache gelesen, "
+                       "und dort liegt diese Domain nicht. Einmal ohne "
+                       "--offline laufen lassen")
         return [
             f"payload: unknown PayloadType '{ptype}' "
-            f"(no schema in branch '{branch}')"
+            f"(no schema in branch '{branch}'){hinweis}"
         ]
     # Combine payload-specific keys with the CommonPayloadKeys
     # so PayloadType/UUID/Identifier/etc. are not flagged as "unknown".
@@ -251,7 +285,8 @@ def deterministic_uuid(seed: str) -> str:
 def build_profile(spec: dict, branch: str = "release",
                   strict: bool = False,
                   validate: bool = True,
-                  offline: bool = False) -> tuple[dict, list[str]]:
+                  offline: bool = False,
+                  manifeste: dict | None = None) -> tuple[dict, list[str]]:
     # Pre-load schemas once with the offline flag if needed
     if validate:
         load_all_schemas(branch, offline=offline)
@@ -299,7 +334,8 @@ def build_profile(spec: dict, branch: str = "release",
         )
         p.setdefault("PayloadDisplayName", ptype)
         if validate:
-            errs = validate_payload(p, branch, strict=strict)
+            errs = validate_payload(p, branch, strict=strict,
+                                    manifeste=manifeste)
             for e in errs:
                 all_errors.append(f"payloads[{i}] {e}")
         final_payloads.append(p)
@@ -315,20 +351,491 @@ def build_profile(spec: dict, branch: str = "release",
 # ─────────────────────────────────────────────────────────────────────────────
 # Optional signing
 # ─────────────────────────────────────────────────────────────────────────────
-def sign_profile(unsigned_path: Path, signed_path: Path,
+# Fester Pfad statt PATH-Suche. Was ein Profil signiert, soll nicht davon
+# abhängen, was sonst noch `security` heißt.
+SECURITY_TOOL = "/usr/bin/security"
+
+# Warum nicht `-p codesigning`: `security find-identity` kennt zwölf Policies,
+# und codesigning ist die falsche davon. Ein Signer-Zertifikat für
+# Konfigurationsprofile trägt die EKU emailProtection (S/MIME) oder gar keine
+# einschränkende EKU und fällt damit nicht unter die Code-Signing-Policy. Auf
+# einem eingerichteten Firmen-Mac sind die Listen nachweislich verschieden:
+#   -p codesigning  zeigt das Apple-Development-Zertifikat und ein selbst
+#                   signiertes, nicht aber die Identität aus der internen CA
+#   -p smime        zeigt genau die Identität aus der internen CA
+#   -p basic        zeigt beide CA-Identitäten, nicht aber das selbst signierte
+# Keine Liste enthält die andere, deshalb fragt list_identities beide
+# brauchbaren Policies ab und vereinigt das Ergebnis.
+IDENTITY_POLICIES = ("smime", "basic")
+
+# Zeilenformat von `security find-identity`:
+#   "  1) 9AC1…CE2C \"Profil-Signer\""
+# Ohne -v haengt hinter dem Namen noch der Grund, warum die Identitaet nicht
+# als gueltig zaehlt, etwa "(CSSMERR_TP_NOT_TRUSTED)". Deshalb kein Anker am
+# Zeilenende.
+_IDENTITY_ZEILE = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.*?)"')
+
+_SHA1_HEX = re.compile(r"^[0-9A-Fa-f]{40}$")
+
+# Auf einem Mac mit Endpoint-Security-Agent kann ein einzelner
+# security-Aufruf unter Last Minuten brauchen. Das darf einen Bau nicht
+# aufhängen, die Liste ist nur Beiwerk fuer die Fehlermeldung.
+IDENTITY_TIMEOUT = 30
+
+# Fuer die Frage "gibt es das Zertifikat ueberhaupt" zaehlt jede Policy und
+# auch eine Identitaet, der noch niemand vertraut. Ein frisch importiertes
+# Signaturzertifikat meldet `(CSSMERR_TP_NOT_TRUSTED)` und laesst sich
+# trotzdem zum Signieren benutzen: Signieren braucht den Schluessel, nicht
+# das Vertrauen.
+IDENTITY_POLICIES_ALLE = ("smime", "basic", "codesigning")
+
+# Auch der Signier-Aufruf braucht eine Grenze. Die Vorabpruefung faengt den
+# Tippfehler im Identitaetsnamen ab, mehr nicht: ein gesperrter Schluesselbund
+# oder ein Freigabe-Dialog ohne Fenstersitzung haengt `security cms` weiterhin,
+# und ohne timeout haengt der Bau mit, ohne Meldung, unbegrenzt.
+#
+# Fuenf Minuten, und die Zahl ist ein Kompromiss. Kuerzer waere gefaehrlich:
+# beim ersten Zugriff auf den privaten Schluessel fragt macOS in einem Dialog
+# nach der Erlaubnis, und wer da gerade nicht am Rechner sitzt, soll deswegen
+# keinen abgebrochenen Bau bekommen. Laenger waere sinnlos: wo niemand
+# antwortet, antwortet auch in einer halben Stunde niemand.
+SIGN_TIMEOUT = 300
+
+_IDENTITY_CACHE: dict[tuple[str, bool], list] = {}
+
+
+def _find_identity(keychain: Path | None, policies: tuple,
+                   nur_gueltige: bool) -> list:
+    gefunden: list = []
+    gesehen: set = set()
+    for policy in policies:
+        cmd = [SECURITY_TOOL, "find-identity"]
+        if nur_gueltige:
+            cmd.append("-v")
+        cmd += ["-p", policy]
+        if keychain:
+            cmd.append(str(keychain))
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=IDENTITY_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        for zeile in proc.stdout.splitlines():
+            treffer = _IDENTITY_ZEILE.match(zeile)
+            if not treffer:
+                continue
+            sha1 = treffer.group(1).upper()
+            if sha1 in gesehen:
+                continue
+            gesehen.add(sha1)
+            gefunden.append((sha1, treffer.group(2)))
+    return gefunden
+
+
+def list_identities(keychain: Path | None = None,
+                    nur_gueltige: bool = True) -> list[tuple[str, str]]:
+    """Signier-Identitäten aus dem Schlüsselbund als [(SHA-1, Name)].
+
+    Mit `nur_gueltige` (Vorgabe) die Liste, die einem Menschen etwas sagt:
+    was unter den Policies smime und basic gerade als gültig durchgeht. Ohne
+    das die vollständige Liste über alle drei Policies, inklusive der
+    Zertifikate, denen noch niemand vertraut. Die zweite Form beantwortet die
+    Frage, ob `security cms` überhaupt etwas finden kann.
+
+    Das Ergebnis wird gemerkt. Ein Lauf fragt sonst dasselbe mehrfach, einmal
+    beim Auflösen der Angabe und einmal beim Berichten des Fehlschlags.
+    """
+    schluessel = (str(keychain or ""), nur_gueltige)
+    if schluessel in _IDENTITY_CACHE:
+        return _IDENTITY_CACHE[schluessel]
+    policies = IDENTITY_POLICIES if nur_gueltige else IDENTITY_POLICIES_ALLE
+    gefunden = _find_identity(keychain, policies, nur_gueltige)
+    _IDENTITY_CACHE[schluessel] = gefunden
+    return gefunden
+
+
+def _identitaeten_text(identitaeten: list[tuple[str, str]]) -> str:
+    policies = ", ".join(IDENTITY_POLICIES)
+    if not identitaeten:
+        return (f"Der Schlüsselbund meldet unter den Policies {policies} "
+                f"keine gültige Identität.")
+    zeilen = [f"Zur Auswahl stehen (Policies {policies}):"]
+    for sha1, name in identitaeten:
+        zeilen.append(f'  {sha1}  "{name}"')
+    zeilen.append("Die Liste ist gefiltert: find-identity zeigt nur, was zur "
+                  "Policy passt und gültig ist.")
+    return "\n".join(zeilen)
+
+
+def _mehrdeutig(name: str, alle: list[tuple[str, str]],
+                gueltige: list[tuple[str, str]]) -> SchemaError:
+    """Die Absage, wenn zwei Zertifikate denselben Namen tragen.
+
+    `security cms -N` wählt allein über den Namen. Steht der Name zweimal im
+    Schlüsselbund, entscheidet `security`, welches der beiden unterschreibt,
+    und sagt es nicht. Ein Fingerabdruck hilft dort nicht weiter: die Option
+    nimmt keinen entgegen. Deshalb endet der Bau hier, statt zu signieren und
+    hinterher einen Signierer zu melden, der es vielleicht nicht war.
+    """
+    betroffen = sorted(sha1 for sha1, kandidat in alle if kandidat == name)
+    zeilen = [
+        f'Der Schlüsselbund hat {len(betroffen)} Zertifikate mit dem Namen '
+        f'"{name}":',
+    ]
+    zeilen += [f"  {sha1}" for sha1 in betroffen]
+    zeilen.append(
+        "Welches davon signiert, lässt sich nicht bestimmen: `security cms "
+        "-N` wählt nur über den Namen, ein Fingerabdruck ist dort keine "
+        "Auswahl. Deshalb wird nicht signiert.")
+    zeilen.append(
+        "Es bleiben zwei Wege: das nicht mehr gebrauchte Zertifikat aus dem "
+        "Schlüsselbund nehmen, oder über --sign-cert/--sign-key mit "
+        "PEM-Dateien signieren, wo das Zertifikat selbst angegeben wird.")
+    zeilen.append(_identitaeten_text(gueltige))
+    return SchemaError("\n".join(zeilen))
+
+
+def resolve_identity(wunsch: str, keychain: Path | None = None) -> str:
+    """Übersetzt die Angabe aus --sign-identity in den Namen für `cms -N`.
+
+    Drei Dinge passieren hier, und alle drei aus einem konkreten Grund.
+
+    `security cms` nimmt einen Zertifikatsnamen, keinen Fingerabdruck. Wer
+    einen SHA-1 angibt, bekommt ihn hier aufgelöst.
+
+    Ein Name, der auf mehrere Zertifikate passt, wird abgelehnt statt geraten,
+    und zwar auf beiden Wegen hinein. Über den Namen war das immer so. Über
+    den SHA-1 nicht: der wurde auf den Namen zurückübersetzt und ungeprüft an
+    `cms -N` gereicht, das ausschließlich nach Namen wählt. Gemessen an einem
+    Wegwerf-Schlüsselbund mit zwei Zertifikaten namens „Doppel-Signer":
+    angefragt war 5CBEAAAA…, signiert hat C7AF8CB6…, und der Lauf meldete
+    Exit 0 samt dem angefragten Fingerabdruck. Ein Fingerabdruck ist für
+    `cms -N` keine Auswahl, deshalb ist er auch hier keine.
+
+    Und ein Name, den der Schlüsselbund gar nicht kennt, wird abgelehnt, bevor
+    `security cms` überhaupt startet. Mit einer unbekannten Identität meldet
+    das Werkzeug zwar sofort `failed to encode data`, bleibt danach aber unter
+    Last minutenlang stehen, statt sich zu beenden. Ein Tippfehler im
+    Identitätsnamen darf keinen Bau aufhängen.
+    """
+    alle = list_identities(keychain=keychain, nur_gueltige=False)
+    gueltige = list_identities(keychain=keychain)
+    if _SHA1_HEX.match(wunsch):
+        name = next((kandidat for sha1, kandidat in alle
+                     if sha1 == wunsch.upper()), None)
+        if name is None:
+            raise SchemaError(
+                f"Kein Zertifikat mit dem SHA-1 {wunsch} im Schlüsselbund.\n"
+                + _identitaeten_text(gueltige))
+        if sum(1 for _, kandidat in alle if kandidat == name) > 1:
+            raise _mehrdeutig(name, alle, gueltige)
+        return name
+    passend = {sha1 for sha1, name in alle if name == wunsch}
+    if len(passend) > 1:
+        raise _mehrdeutig(wunsch, alle, gueltige)
+    if not passend:
+        raise SchemaError(
+            f"Der Schlüsselbund kennt keine Identität namens '{wunsch}'. "
+            f"security cms würde hier ohne brauchbare Meldung stehenbleiben, "
+            f"deshalb bricht der Bau vorher ab.\n"
+            + _identitaeten_text(gueltige))
+    return wunsch
+
+
+def _rechte_uebernehmen(teil: Path, ziel: Path) -> None:
+    """Gibt der Temporärdatei die Rechte, die der Zielpfad hätte.
+
+    Zwei Fälle, und beide sollen aussehen wie vorher. Gab es die Zieldatei
+    schon, behält sie ihre Rechte: das alte Werkzeug schrieb in die
+    bestehende Datei, ein `chmod 600` des Benutzers überlebte das, und
+    `os.replace` würde es sonst still auf 0644 zurückdrehen. Gab es sie
+    nicht, kommen die Rechte heraus, die openssl oder security vergeben
+    hätten, also 0666 gegen die umask.
+
+    `mkstemp` legt mit 0600 an, was für ein Profil mit Klartext-Passwort die
+    bessere Vorgabe wäre. Das ist aber eine eigene Entscheidung und gehört
+    nicht als Nebenwirkung in eine Reparatur, die von verlorenen Dateien
+    handelt.
+    """
+    try:
+        modus = ziel.stat().st_mode & 0o7777
+    except OSError:
+        maske = os.umask(0)
+        os.umask(maske)
+        modus = 0o666 & ~maske
+    try:
+        os.chmod(teil, modus)
+    except OSError:
+        pass
+
+
+TEIL_SUFFIX = ".teil"
+
+# `mkstemp` schiebt zwischen Präfix und Suffix acht Zufallszeichen. Die
+# zählen mit, wenn der Dateiname gegen NAME_MAX geprüft wird.
+_MKSTEMP_ZUFALL = 8
+
+
+def _teil_praefix(ziel: Path) -> str:
+    """Der Namensanfang der Temporärdatei, gekürzt auf das, was hineinpasst.
+
+    Die Temporärdatei heißt nach ihrem Ziel, damit erkennbar bleibt, wozu sie
+    gehört, falls doch einmal eine liegenbleibt. Bei einem langen Ausgabenamen
+    sprengt das aber NAME_MAX, und dann scheitert schon `mkstemp`.
+
+    Das ist kein theoretischer Fall, sondern ein Fenster, in dem dieses
+    Werkzeug schlechter wäre als vorher. Der alte Weg legte
+    `<stamm>.unsigned.mobileconfig` neben die Ausgabe, brauchte also 22
+    Zeichen über den Stamm hinaus. Der ungekürzte Präfix braucht 27
+    (`.mobileconfig.` plus acht Zufallszeichen plus `.teil`). Gemessen bei
+    einem Ausgabenamen aus 244 Zeichen: alter Stand Exit 0 und 2468 Bytes
+    gültig signiert, ungekürzter Präfix `OSError: [Errno 63] File name too
+    long`. Mit der Kürzung signieren beide, und Namen bis an NAME_MAX heran
+    gehen auch durch.
+
+    Gekürzt wird von hinten, der Anfang des Namens sagt mehr. Eindeutig
+    bleibt die Datei über die Zufallszeichen, die `mkstemp` selbst vergibt.
+    """
+    try:
+        grenze = os.pathconf(str(ziel.parent), "PC_NAME_MAX")
+    except (OSError, ValueError, AttributeError):
+        grenze = 255
+    platz = grenze - _MKSTEMP_ZUFALL - len(TEIL_SUFFIX)
+    return (ziel.name + ".")[:max(1, platz)]
+
+
+def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
+               werkzeug: str, nachspann: str = "",
+               nachpruefung=None, haenger_hinweis: str = "") -> None:
+    """Ruft das Signier-Werkzeug und schickt das Profil über stdin.
+
+    Über stdin, damit das unsignierte Profil mit seinen Klartext-Passwörtern
+    gar nicht erst auf die Platte kommt. Vorher schrieb main() eine
+    `<output>.unsigned.mobileconfig` daneben und löschte sie nach dem
+    Signieren. Scheiterte der Aufruf, blieb sie mit Modus 0644 liegen, samt
+    WLAN-Passwort im Klartext.
+
+    Signiert wird in eine Temporärdatei im Zielverzeichnis. An den Zielpfad
+    kommt sie erst, wenn jede Prüfung durch ist, und dann über `os.replace`.
+    Der Grund ist der zweite Bau auf denselben Pfad, also der Normalfall nach
+    einer Spec-Änderung: `openssl -out` und `security cms -o` kürzen ihre
+    Ausgabedatei schon beim Öffnen auf null Bytes. Scheiterte danach das
+    Signieren, blieb genau die leere .mobileconfig liegen, die hier
+    verhindert werden soll, und das zuvor dort liegende gültige Profil war
+    weg. Gemessen: 1378 Bytes gültiges Profil vorher, 0 Bytes nachher.
+
+    `cmd_bauen` bekommt den Pfad, auf den das Werkzeug schreiben soll, und
+    liefert die Befehlszeile. `nachpruefung` bekommt denselben Pfad und darf
+    werfen; sie läuft vor dem Verschieben, sonst landet eine verworfene
+    Signatur trotzdem für einen Moment auf dem Zielpfad und nimmt das alte
+    Profil mit.
+
+    Der Aufruf hat ein Timeout. Ohne das hängt ein gesperrter Schlüsselbund
+    den Bau unbegrenzt und ohne Meldung, und das ist der Fall, den die
+    Fehlerdiagnose in references/signing.md als selbst erlebt beschreibt.
+    `haenger_hinweis` sagt, was für dieses Werkzeug dahinterstecken kann.
+
+    Gearbeitet wird auf dem über `realpath` aufgelösten Pfad. Ist der
+    Ausgabepfad ein symbolischer Link, schrieb `openssl -out` durch ihn
+    hindurch in die verlinkte Datei und ließ den Link stehen. `os.replace`
+    auf den Linknamen täte etwas anderes: es ersetzte den Link durch eine
+    gewöhnliche Datei und ließe die verlinkte Datei unangetastet. Gemessen
+    gegen den Stand vor dieser Welle: dort blieb der Link stehen und die
+    verlinkte Datei hatte 2468 Bytes gültig signiert, ohne `realpath` lag das
+    Profil unter dem Linknamen und die verlinkte Datei war leer. Zeigt der
+    Link ins Leere, entsteht dieselbe Zieldatei, die openssl angelegt hätte.
+    In den Meldungen steht weiter der Pfad, den der Aufrufer angegeben hat.
+
+    Das Verzeichnis muss beschreibbar sein, nicht nur die Zieldatei: die
+    Temporärdatei entsteht dort, und `os.replace` braucht das Verzeichnis.
+    Wo das fehlt, kommt eine Meldung heraus und kein Traceback, und was am
+    Zielpfad liegt, bleibt liegen.
+    """
+    ziel = Path(os.path.realpath(signed_path))
+    try:
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+        fd, roh = tempfile.mkstemp(dir=str(ziel.parent),
+                                   prefix=_teil_praefix(ziel),
+                                   suffix=TEIL_SUFFIX)
+    except OSError as fehler:
+        raise SchemaError(
+            f"Die Zwischendatei neben {signed_path} ließ sich nicht anlegen: "
+            f"{fehler.strerror}.\n"
+            f"Signiert wird in eine Datei neben dem Ziel, die erst danach an "
+            f"den Zielpfad geschoben wird. Dafür braucht das Verzeichnis "
+            f"{ziel.parent} Schreibrecht, nicht nur die Zieldatei selbst. "
+            f"Signiert wurde nicht.")
+    os.close(fd)
+    teil = Path(roh)
+    try:
+        cmd = cmd_bauen(teil)
+        try:
+            proc = subprocess.run(cmd, input=profil, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE,
+                                  timeout=SIGN_TIMEOUT)
+        except OSError as fehler:
+            raise SchemaError(f"{cmd[0]} ließ sich nicht starten: {fehler}")
+        except subprocess.TimeoutExpired:
+            text = (f"{werkzeug} hat nach {SIGN_TIMEOUT} Sekunden nichts "
+                    f"geliefert und wurde abgebrochen. Signiert wurde nicht.")
+            if haenger_hinweis:
+                text += f"\n{haenger_hinweis}"
+            raise SchemaError(text)
+
+        meldung = proc.stderr.decode("utf-8", "replace").strip()
+        if proc.returncode != 0:
+            text = f"{werkzeug} ist mit Exit {proc.returncode} gescheitert."
+            if meldung:
+                text += f"\n{meldung}"
+            if nachspann:
+                text += f"\n{nachspann}"
+            raise SchemaError(text)
+        # Der Exit-Code allein ist kein Beleg: `security cms -S` beendet sich
+        # mit 0, auch wenn es die Identität nicht findet, meldet den Fehler
+        # nur auf stderr und legt eine Datei mit null Bytes an. Deshalb wird
+        # das Ergebnis nachgesehen statt geglaubt.
+        if not teil.exists() or teil.stat().st_size == 0:
+            text = f"{werkzeug} meldet Exit 0, hat aber nichts nach " \
+                   f"{signed_path} geschrieben."
+            if meldung:
+                text += f"\n{meldung}"
+            if nachspann:
+                text += f"\n{nachspann}"
+            raise SchemaError(text)
+        # CMS im DER-Format fängt mit einer ASN.1-SEQUENCE an (0x30). Was
+        # damit nicht anfängt, ist keine Signatur, sondern durchgereichter
+        # Input.
+        with teil.open("rb") as fh:
+            erstes_byte = fh.read(1)
+        if erstes_byte != b"\x30":
+            raise SchemaError(
+                f"{werkzeug} hat nach {signed_path} etwas geschrieben, das "
+                f"nicht mit einer ASN.1-SEQUENCE anfängt (erstes Byte "
+                f"{erstes_byte!r}). Das ist keine PKCS#7-Signatur.")
+        if nachpruefung is not None:
+            nachpruefung(teil)
+        _rechte_uebernehmen(teil, ziel)
+        try:
+            os.replace(teil, ziel)
+        except OSError as fehler:
+            raise SchemaError(
+                f"Die fertige Signatur ließ sich nicht nach {signed_path} "
+                f"schieben: {fehler.strerror}.\n"
+                f"Signiert wurde, angekommen ist nichts. Was vorher unter "
+                f"dem Pfad lag, liegt unverändert dort.")
+    finally:
+        # Nach dem Verschieben gibt es die Temporärdatei nicht mehr, dann
+        # fällt das hier durch. Sonst raus damit, auch bei Ctrl-C.
+        try:
+            teil.unlink()
+        except OSError:
+            pass
+
+
+def sign_profile(profil: bytes, signed_path: Path,
                  cert: Path, key: Path,
                  ca_chain: Path | None = None) -> None:
-    """Use openssl smime to sign the profile (CMS / PKCS#7 detached → embedded)."""
-    cmd = [
-        "openssl", "smime", "-sign", "-signer", str(cert),
-        "-inkey", str(key), "-nodetach", "-outform", "der",
-        "-in", str(unsigned_path), "-out", str(signed_path),
-    ]
-    if ca_chain:
-        cmd += ["-certfile", str(ca_chain)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise SchemaError(f"openssl signing failed: {proc.stderr}")
+    """Signiert mit `openssl smime` (CMS / PKCS#7, DER, eingebettetes XML).
+
+    `profil` sind die Bytes der unsignierten Plist. Sie gehen über stdin an
+    openssl, es gibt keine unsignierte Zwischendatei.
+    """
+    def bauen(ziel: Path) -> list[str]:
+        cmd = [
+            "openssl", "smime", "-sign", "-signer", str(cert),
+            "-inkey", str(key), "-nodetach", "-outform", "der",
+            "-out", str(ziel),
+        ]
+        if ca_chain:
+            cmd += ["-certfile", str(ca_chain)]
+        return cmd
+
+    _signieren(bauen, profil, signed_path, "openssl smime -sign",
+               haenger_hinweis=(
+                   "Meist steckt eine Passphrase dahinter: ist der private "
+                   "Schlüssel verschlüsselt, fragt openssl danach und wartet. "
+                   "Über SSH oder in CI antwortet dort niemand. Den Schlüssel "
+                   "vorher entschlüsseln oder eine Datei ohne Passphrase "
+                   "verwenden."))
+
+
+def sign_profile_keychain(profil: bytes, signed_path: Path, identity: str,
+                          keychain: Path | None = None) -> None:
+    """Signiert über eine Identität im macOS-Schlüsselbund.
+
+    `openssl` kann einen Schlüssel im Schlüsselbund nicht lesen, deshalb läuft
+    dieser Weg über `security cms -S`. Der private Schlüssel verlässt den
+    Schlüsselbund nicht, was in Unternehmen der übliche Fall ist. Der Preis
+    ist ein zweiter Code-Pfad, den es nur auf macOS gibt.
+
+    `-H SHA256` ist gesetzt, weil `security cms` sonst SHA-1 nimmt.
+    """
+    if sys.platform != "darwin":
+        raise SchemaError(
+            f"--sign-identity signiert über den macOS-Schlüsselbund und läuft "
+            f"nur auf macOS. Auf {sys.platform} bleibt der Weg über "
+            f"--sign-cert und --sign-key mit PEM-Dateien.")
+    nickname = resolve_identity(identity, keychain=keychain)
+
+    def bauen(ziel: Path) -> list[str]:
+        cmd = [SECURITY_TOOL, "cms", "-S", "-N", nickname, "-H", "SHA256",
+               "-o", str(ziel)]
+        if keychain:
+            cmd += ["-k", str(keychain)]
+        return cmd
+
+    kette = f" {keychain}" if keychain else ""
+    _signieren(bauen, profil, signed_path, "security cms -S",
+               nachspann=(f"Angefragt war: {identity}\n"
+                          + _identitaeten_text(list_identities(
+                              keychain=keychain))),
+               nachpruefung=lambda ziel: _pruefe_cms_inhalt(profil, ziel),
+               haenger_hinweis=(
+                   "Zwei Ursachen kommen dafür in Frage, beide außerhalb "
+                   "dieses Werkzeugs:\n"
+                   "  - Der Schlüsselbund ist gesperrt. Vorher "
+                   f"`security unlock-keychain{kette}`, und damit er nicht "
+                   "nach Leerlauf wieder zufällt "
+                   f"`security set-keychain-settings{kette}`.\n"
+                   "  - Der Schlüssel hat keine Freigabe für "
+                   "/usr/bin/security, und der Dialog wartet auf eine "
+                   "Fenstersitzung, die es über SSH oder in CI nicht gibt. "
+                   "Beim Import `-T /usr/bin/security` setzen und danach "
+                   "`security set-key-partition-list -S apple-tool:,apple: "
+                   f"-s -k <Passwort>{kette}`."))
+
+
+def _pruefe_cms_inhalt(profil: bytes, signiert: Path) -> None:
+    """Packt die Signatur wieder aus und vergleicht mit dem Original.
+
+    `security cms -S` ist beim Melden von Fehlern unzuverlässig: es endet mit
+    Exit 0, auch wenn nichts signiert wurde. Beim Nachstellen einer
+    erfundenen Identität sind außerdem zwei von sieben Läufen mit einer
+    Ausgabedatei durchgelaufen, während zwanzig direkte Aufrufe von
+    `security cms` mit derselben Identität sämtlich nichts geschrieben haben.
+    Statt dem Werkzeug zu glauben, wird die fertige Datei mit
+    `security cms -D` wieder ausgepackt. Stimmt der Inhalt nicht Byte für
+    Byte mit dem Profil überein, fliegt die Datei raus.
+
+    Geprüft wird die Temporärdatei, bevor sie an den Zielpfad geschoben wird.
+    Löschen muss die Funktion deshalb nichts mehr: was hier durchfällt, hat
+    den Zielpfad nie gesehen.
+    """
+    try:
+        proc = subprocess.run([SECURITY_TOOL, "cms", "-D", "-i", str(signiert)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=SIGN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise SchemaError(
+            f"`security cms -D` hat nach {SIGN_TIMEOUT} Sekunden nichts "
+            f"geliefert. Ob die Signatur das gebaute Profil enthält, ist "
+            f"damit ungeprüft, also wurde nichts geschrieben.")
+    if proc.returncode != 0 or proc.stdout != profil:
+        meldung = proc.stderr.decode("utf-8", "replace").strip()
+        raise SchemaError(
+            "Die Signatur lässt sich nicht wieder auspacken oder enthält "
+            "nicht das gebaute Profil. Es wurde nichts geschrieben."
+            + (f"\n{meldung}" if meldung else ""))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -360,13 +867,46 @@ def main():
                          "Regex-Format-Checks aktiv)")
     ap.add_argument("--no-validate", action="store_true",
                     help="Schema-Validierung überspringen (NICHT empfohlen)")
+    ap.add_argument("--manifests", action="store_true",
+                    help="Zweite Schema-Quelle ProfileManifests zulassen, "
+                         "fuer PayloadTypes, die Apple nicht kennt "
+                         "(Chrome, Office, Zoom …). Wird zur Laufzeit "
+                         "geladen, nichts davon liegt im Repo.")
+    ap.add_argument("--manifests-ref", default=MANIFESTS_REF,
+                    help=f"Branch, Tag oder Commit von ProfileManifests "
+                         f"(default: {MANIFESTS_REF})")
     ap.add_argument("--sign-cert", type=Path,
                     help="X.509-Zertifikat (PEM) zum Signieren")
     ap.add_argument("--sign-key", type=Path,
                     help="Privater Schlüssel (PEM) zum Signieren")
     ap.add_argument("--sign-ca", type=Path,
                     help="CA-Chain (PEM, optional)")
+    ap.add_argument("--sign-identity",
+                    help="Name oder SHA-1 einer Identität im macOS-"
+                         "Schlüsselbund. Signiert über `security cms`, der "
+                         "private Schlüssel bleibt im Schlüsselbund. "
+                         "Kandidaten zeigt "
+                         "`security find-identity -v -p smime` "
+                         "(nicht -p codesigning).")
+    ap.add_argument("--keychain", type=Path,
+                    help="Schlüsselbund-Datei, in der --sign-identity gesucht "
+                         "wird (Vorgabe: die Suchliste des Benutzers)")
     args = ap.parse_args()
+
+    # Flag-Kombinationen zuerst, damit ein Tippfehler nicht erst nach der
+    # Schema-Validierung auffällt.
+    if args.sign_identity and (args.sign_cert or args.sign_key or args.sign_ca):
+        sys.exit("FEHLER: --sign-identity und --sign-cert/--sign-key/--sign-ca "
+                 "sind zwei getrennte Wege. Entweder der Schlüssel bleibt im "
+                 "Schlüsselbund, oder er liegt als PEM-Datei vor.")
+    if bool(args.sign_cert) != bool(args.sign_key):
+        sys.exit("FEHLER: --sign-cert und --sign-key gehören zusammen.")
+    if args.keychain and not args.sign_identity:
+        sys.exit("FEHLER: --keychain wirkt nur zusammen mit --sign-identity.")
+
+    manifeste = None
+    if args.manifests:
+        manifeste = {"ref": args.manifests_ref, "offline": args.offline}
 
     spec = load_spec(args.spec)
     profile, errors = build_profile(
@@ -374,7 +914,32 @@ def main():
         strict=args.validate_strict,
         validate=not args.no_validate,
         offline=args.offline,
+        manifeste=manifeste,
     )
+
+    # Wer gegen die zweite Quelle geprueft hat, soll das sehen. Die Angabe
+    # steht auf stderr, damit sie eine Pipe auf stdout nicht verschmutzt.
+    #
+    # Gefragt wird das Schema selbst, nicht der Umkehrschluss "Apple kennt es
+    # nicht, also kam es von ProfileManifests". Die Herkunft traegt den
+    # Lizenzhinweis, und eine Herkunftsangabe, die aus dem Fehlen einer
+    # anderen Quelle folgt, traegt gar nichts.
+    if manifeste is not None and not args.no_validate:
+        aus_manifest = []
+        for p in profile.get("PayloadContent", []):
+            if not isinstance(p, dict) or not p.get("PayloadType"):
+                continue
+            schema = get_schema(p["PayloadType"], args.branch,
+                                manifeste=manifeste)
+            if isinstance(schema, dict) \
+                    and schema.get("_origin") == "ProfileManifests":
+                aus_manifest.append(p["PayloadType"])
+        if aus_manifest:
+            print(f"Hinweis: geprueft gegen ProfileManifests (Stand "
+                  f"{args.manifests_ref}) statt gegen Apples Schema: "
+                  + ", ".join(sorted(set(aus_manifest))), file=sys.stderr)
+            print("  Die Sammlung ist von Mac-Admins gepflegt, nicht von "
+                  "Apple, und hat keine Lizenzangabe.", file=sys.stderr)
 
     if errors:
         print("Validation issues:", file=sys.stderr)
@@ -388,23 +953,30 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.sign_cert and args.sign_key:
-        # Write unsigned to a tmp file, then sign.
-        tmp = args.output.with_suffix(".unsigned.mobileconfig")
-        with tmp.open("wb") as f:
-            plistlib.dump(profile, f, fmt=plistlib.FMT_XML)
-        sign_profile(tmp, args.output, args.sign_cert, args.sign_key,
-                     args.sign_ca)
-        tmp.unlink()
-        print(f"✓ Signed profile written to {args.output}")
-    elif args.sign_cert or args.sign_key:
-        sys.exit("--sign-cert and --sign-key must be used together")
-    else:
-        with args.output.open("wb") as f:
-            plistlib.dump(profile, f, fmt=plistlib.FMT_XML)
-        print(f"✓ Unsigned profile written to {args.output}")
-        print("  (Apple-Geräte zeigen 'Nicht signiert' beim Install — "
-              "für produktiven Einsatz mit --sign-cert/--sign-key signieren.)")
+    # Einmal serialisieren, dann je nach Weg weiterreichen. Die Bytes gehen an
+    # das Signier-Werkzeug über stdin, damit kein unsigniertes Zwischenprodukt
+    # auf der Platte landet.
+    profil_bytes = plistlib.dumps(profile, fmt=plistlib.FMT_XML)
+
+    try:
+        if args.sign_identity:
+            sign_profile_keychain(profil_bytes, args.output,
+                                  args.sign_identity, keychain=args.keychain)
+            print(f"✓ Signed profile written to {args.output}")
+            print(f"  (Schlüsselbund-Identität: {args.sign_identity})")
+        elif args.sign_cert:
+            sign_profile(profil_bytes, args.output, args.sign_cert,
+                         args.sign_key, args.sign_ca)
+            print(f"✓ Signed profile written to {args.output}")
+        else:
+            args.output.write_bytes(profil_bytes)
+            print(f"✓ Unsigned profile written to {args.output}")
+            print("  (Apple-Geräte zeigen 'Nicht signiert' beim Install. "
+                  "Produktiv wird signiert, siehe --sign-cert/--sign-key "
+                  "oder --sign-identity.)")
+    except SchemaError as fehler:
+        print(f"FEHLER: {fehler}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

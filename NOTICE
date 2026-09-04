@@ -16,3 +16,20 @@ Apple device-management schemas
   files are vendored into this repository, and none are redistributed with
   it. The cache holds a verbatim copy of Apple's files; the MIT license
   above applies to that copy.
+
+ProfileManifests
+  https://github.com/ProfileManifests/ProfileManifests
+  No license.
+
+  This repository carries no LICENSE file, and the GitHub API reports
+  "license": null (checked 2026-09-04). Without a license there is no grant
+  to redistribute, so nothing from it is vendored here and nothing ships in
+  the release archive. scripts/fetch_schema.py fetches a single manifest at
+  runtime, only when you pass --manifests, and caches it under
+  ~/.cache/mobileconfig-builder/profilemanifests/<ref>/. That copy is yours,
+  made by you, on your machine. Whether you may pass it on is a question for
+  the upstream project, not one this repository can answer.
+
+  The manifests are maintained by the Mac Admins community and also power
+  ProfileCreator and iMazing Profile Editor. They are not an Apple source.
+  Where Apple describes a payload type, this tool ignores the manifest.

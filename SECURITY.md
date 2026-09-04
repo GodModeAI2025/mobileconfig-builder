@@ -29,17 +29,42 @@ referenced by path via `--sign-key`.
 
 **Attack path 1: the profile lands in git.** The quick start writes into the working directory
 (`-o wifi.mobileconfig` in `README.md:26`, `-o guest-wifi.mobileconfig` in `index.html:509`), which
-is the repo root if you follow it literally. `.gitignore` has one line, `.DS_Store`, so `git add -A`
-commits the passphrase. Secret scanning and push protection are enabled here, but they match
-provider token patterns, not a WPA passphrase in an XML plist, and non-provider patterns are off.
+is the repo root if you follow it literally. `.gitignore` now covers `*.mobileconfig` and key
+material as a backstop, but a spec file with a real password is not covered by any pattern, and
+`tools/scan_secrets.py` only sees what is already staged. Secret scanning and push protection are
+enabled here, but they match provider token patterns, not a WPA passphrase in an XML plist, and
+non-provider patterns are off.
 
-**Attack path 2: signing fails and the cleartext stays behind.** `scripts/build_mobileconfig.py`
-writes the unsigned plist to `<output>.unsigned.mobileconfig` in lines 361-366, calls `sign_profile`,
-and unlinks the temp file only afterwards. `sign_profile` raises at line 299 when `openssl` exits
-non-zero, so `tmp.unlink()` is never reached. Reproduced with a nonexistent cert path:
+**Attack path 2: signing fails and the cleartext stays behind. Closed.** Until the keychain work,
+`scripts/build_mobileconfig.py` wrote the unsigned plist to `<output>.unsigned.mobileconfig`, called
+`sign_profile`, and unlinked the temp file only afterwards. `sign_profile` raised when `openssl`
+exited non-zero, so `tmp.unlink()` was never reached. Reproduced with a nonexistent cert path:
 `leak.unsigned.mobileconfig` stayed on disk, mode 0644, containing
 `<key>Password</key><string>supersecret123</string>`, next to a zero byte `leak.mobileconfig` that
-reads like a finished profile. The exception surfaced as a traceback.
+reads like a finished profile, and the exception surfaced as a traceback. The unsigned plist now
+goes to the signing tool over stdin and is never written to disk. The message is a message and not
+a traceback, and the exit code is 2.
+
+The first fix for the leftover file was half of one, and this is where it was half: the output file
+was removed on failure *unless it existed before the run*. Which is the common case. A second build
+onto the same path, after any change to the spec, hits an existing file, and both signing tools
+truncate their output file when they open it. Measured with `wifi_guest.json`: 1378 bytes of valid
+profile before the failed run, 0 bytes after, and the cleanup branch skipped the file because it
+had existed. Signing now writes to a temporary file in the target directory and only moves it onto
+the output path, with `os.replace`, once every check has passed. The output path therefore either
+keeps what it had or gets a verified signature, and there is no longer a condition on when a file
+may be deleted. Eval 7 asserts all of it, including that no file in the output directory contains
+the example password and that an existing profile survives a failed run byte for byte.
+
+The temporary file cost two cases of its own, and both are fixed rather than described away. A
+symbolic link as the output path used to be written through, leaving the link in place; `os.replace`
+on the link name replaced the link with a regular file and left the linked file at 0 bytes. Work
+now happens on the `realpath`-resolved path, so the linked file gets the profile again, as it did
+before. And the temporary file needs write permission on the *directory*, not just on the output
+file: in a directory with mode 555 the run ends with exit 2 and a message, and whatever was at the
+output path stays untouched. A CI step signs against all of it with a self-signed certificate:
+normal case, a 254 character output name, symlink, directory as output path, and the failed second
+build. That step is red against the state this repository had before these fixes.
 
 **Attack path 3: a poisoned schema cache.** `fetch_schema.py:76-77` returns a file from
 `~/.cache/mobileconfig-builder/<branch>/` whenever it exists and `--refresh` is not set. No TTL, no
@@ -53,8 +78,9 @@ Out of scope: the MDM server, the device, Apple's own schema, and the device tru
 
 ## Trust Boundaries
 
-**The private signing key never enters this process.** It is passed by path and handed to
-`openssl smime` as an argv value (`build_mobileconfig.py:286-299`). Python never reads the file.
+**The private signing key never enters this process.** With `--sign-cert` it is passed by path and
+handed to `openssl smime` as an argv value. With `--sign-identity` it is never named at all: the
+key stays in the macOS keychain and `/usr/bin/security cms` signs inside it. Python reads neither.
 Keep it that way in any patch.
 
 **No private keys through chat.** The rule lives in `references/signing.md:50-54` and belongs in a
@@ -129,7 +155,15 @@ All open in `main` today.
   profile format, not a bug. Anything stricter happens before the spec and after the output.
 - **No payload encryption.** Per device payload encryption, the way an MDM does it, is missing.
 - **No judgment about your certificate.** EKU, expiry, key usage, chain and issuer trust are
-  unchecked. `openssl` signs with whatever you point it at.
+  unchecked. `openssl` signs with whatever you point it at, and `security cms` signs with whatever
+  identity you name. What the tool does check is that the result is a PKCS#7 structure that unpacks
+  back to exactly the profile it built, because `security cms -S` reports success on stderr-only
+  failures. It also checks that the name it hands to `security cms -N` belongs to exactly one
+  certificate in the keychain it was pointed at, and refuses otherwise. That check is about
+  identifying the signer, not about judging it: `-N` selects by name alone and takes no
+  fingerprint, so with two certificates of the same name the tool could not say afterwards which
+  one signed. Whether `security cms` restricts itself to the keychain given with `--keychain` is
+  not measured here and not claimed.
 - **No policy review.** Schema valid means keys and types match Apple's YAML. It says nothing about
   whether a device accepts the profile or whether the policy behind it makes sense.
 - **Unsigned profiles are for lab use.** Do not deploy them to production or through an MDM.

@@ -8,15 +8,26 @@ Drei sinnvolle Optionen:
 
 1. **Eigene interne CA** — am häufigsten in Unternehmen. Die CA ist auf den Zielgeräten als vertrauenswürdig hinterlegt (z.B. via MDM-Push eines Root-Zertifikats). Vorteil: voll kontrolliert. Nachteil: Geräte ohne CA-Vertrauen lehnen das Profil ab.
 
-2. **Public-Trust-Zertifikat (z.B. DigiCert, Sectigo)** — eines, dem die Apple-Geräte ab Werk vertrauen. Funktioniert ohne CA-Push. Code-Signing- oder S/MIME-EKU empfohlen.
+2. **Public-Trust-Zertifikat (z.B. DigiCert, Sectigo)** — eines, dem die Apple-Geräte ab Werk vertrauen. Funktioniert ohne CA-Push. Die passende Extended Key Usage ist `emailProtection` (S/MIME); ein Zertifikat ganz ohne einschränkende EKU geht ebenfalls. Ein reines Code-Signing-Cert ist die falsche Wahl, siehe den Abschnitt zum Schlüsselbund weiter unten.
 
 3. **Apple Developer Enterprise Cert** — wenn vorhanden. Funktioniert auch.
 
 **Was nicht funktioniert:** Self-Signed-Cert ohne Trust-Etablierung. Das Profil installiert sich, zeigt aber „Nicht signiert / Nicht überprüft" wie das unsignierte.
 
-## Format
+## Zwei Wege, dasselbe Ergebnis
 
-`build_mobileconfig.py` nutzt `openssl smime -sign`. Das erzeugt CMS / PKCS#7 Signed Data im DER-Format mit eingebettetem Original-XML. Apple's Spezifikation ist genau das.
+| | `--sign-cert` / `--sign-key` | `--sign-identity` |
+|---|---|---|
+| Werkzeug | `openssl smime -sign` | `/usr/bin/security cms -S` |
+| Schlüssel liegt | als PEM-Datei im Dateisystem | im Schlüsselbund, er verlässt ihn nicht |
+| Plattform | überall, wo `openssl` im PATH ist | nur macOS |
+| Hash | Vorgabe des Werkzeugs, bei OpenSSL 3.6 und der mit macOS gelieferten LibreSSL 3.3 jeweils SHA-256 | `SHA256`, gesetzt über `-H`, weil die Vorgabe SHA-1 wäre |
+
+Beide erzeugen CMS / PKCS#7 Signed Data im DER-Format mit eingebettetem
+Original-XML. Genau das verlangt Apples Spezifikation, und beide Ergebnisse
+lassen sich mit denselben Befehlen aus dem Abschnitt Verifikation prüfen.
+
+## Weg 1: PEM-Dateien über OpenSSL
 
 Pflicht:
 - Cert + Private Key im PEM-Format
@@ -25,8 +36,6 @@ Pflicht:
 Empfohlen:
 - CA-Chain als drittes File mit allen Intermediate-Certs (sonst kann das Gerät die Trust-Chain ggf. nicht aufbauen)
 
-## Beispiel-Aufruf
-
 ```bash
 python3 scripts/build_mobileconfig.py spec.json \
   -o profil.mobileconfig --offline \
@@ -34,6 +43,167 @@ python3 scripts/build_mobileconfig.py spec.json \
   --sign-key  /path/to/signer-key.pem \
   --sign-ca   /path/to/ca-chain.pem
 ```
+
+## Weg 2: Identität aus dem macOS-Schlüsselbund
+
+In Unternehmen liegt der private Schlüssel meist gar nicht als Datei vor. Er
+kommt über ein SCEP- oder ADCS-Profil in den Schlüsselbund und ist dort als
+nicht exportierbar markiert. `openssl` kann ihn nicht lesen, `security cms`
+schon.
+
+```bash
+# Kandidaten anzeigen
+security find-identity -v -p smime
+security find-identity -v -p basic
+
+# Signieren, Name oder SHA-1 aus der Liste oben
+python3 scripts/build_mobileconfig.py spec.json \
+  -o profil.mobileconfig --offline \
+  --sign-identity "Profil-Signer 2026"
+```
+
+### Warum nicht `-p codesigning`
+
+`security find-identity` filtert nach Policy, und codesigning ist für
+Konfigurationsprofile die falsche. Ein Signer-Zertifikat trägt entweder die
+EKU `emailProtection` oder gar keine einschränkende EKU. Unter der
+Code-Signing-Policy taucht es dann nicht auf, und wer sich darauf verlässt,
+hält ein vorhandenes Zertifikat für nicht vorhanden.
+
+Auf einem eingerichteten Firmen-Mac sehen die drei Listen so aus:
+
+| Policy | Was auftaucht |
+|---|---|
+| `-p codesigning` | das Apple-Development-Zertifikat und ein selbst signiertes |
+| `-p smime` | die Identität aus der internen CA |
+| `-p basic` | die CA-Identitäten, nicht aber das selbst signierte |
+
+Keine der Listen enthält die andere. `--sign-identity` fragt deshalb `smime`
+und `basic` ab und zeigt die Vereinigung, wenn die angegebene Identität nicht
+passt.
+
+### Was beim ersten Aufruf passiert
+
+Beim ersten Zugriff auf den privaten Schlüssel fragt macOS in einem Dialog
+nach der Erlaubnis. Wer „Immer erlauben" wählt, trägt `security` dauerhaft in
+die Zugriffsliste (ACL) des Schlüssels ein und wird nicht mehr gefragt. Über
+SSH oder in einem CI-Job ohne Fenstersitzung gibt es diesen Dialog nicht, der
+Aufruf bleibt dort einfach hängen oder scheitert. Für automatisierte Läufe
+gehört die Zugriffsliste vorher gesetzt, etwa beim Import:
+
+```bash
+security import signer.p12 -k build.keychain-db -P "$PW" -T /usr/bin/security
+security set-key-partition-list -S apple-tool:,apple: -s -k "$PW" build.keychain-db
+```
+
+`--keychain build.keychain-db` schickt Suche und Signierung dann in genau
+diesen Schlüsselbund statt in die Suchliste des Benutzers.
+
+### Was das Werkzeug prüft
+
+`security cms` ist beim Melden von Fehlern unbrauchbar. Mit einer Identität,
+die es nicht gibt, schreibt es `failed to encode data: unknown error -1` auf
+stderr, endet mit Exit **0** und legt eine Datei mit null Bytes an. Unter Last
+beendet es sich danach gar nicht mehr, sondern bleibt minutenlang stehen.
+
+`build_mobileconfig.py` geht deshalb zweigleisig vor.
+
+**Vorher.** Die Angabe aus `--sign-identity` wird gegen
+`security find-identity` geprüft, über die Policies smime, basic und
+codesigning und ohne `-v`, damit auch ein frisch importiertes, noch nicht
+vertrautes Zertifikat zählt. Kennt der Schlüsselbund den Namen nicht, bricht
+der Bau ab, bevor `security cms` überhaupt startet. Ein Tippfehler im Namen
+soll keinen Bau aufhängen. Ein SHA-1 wird hier auf den Namen aufgelöst, den
+`cms -N` erwartet. Er ist damit eine Schreibweise für den Namen, keine
+Auswahl unter mehreren Zertifikaten desselben Namens: was dann passiert,
+steht im nächsten Abschnitt.
+
+### Zwei Zertifikate mit demselben Namen
+
+`security cms -N` wählt allein über den Namen des Zertifikats. Einen
+Fingerabdruck nimmt die Option nicht entgegen. Stehen zwei Zertifikate mit
+demselben Common Name im Schlüsselbund, der abgelaufene Signer von letztem
+Jahr und der neue, dann entscheidet `security`, welches der beiden
+unterschreibt, und sagt es nicht.
+
+`--sign-identity` lehnt diesen Fall ab, egal ob die Angabe ein Name oder ein
+SHA-1 war. Ein SHA-1 sieht aus wie eine eindeutige Auswahl, ist aber keine:
+er wird auf den Namen zurückübersetzt, und der Name ist mehrdeutig. Bis
+Welle 5 signierte das Werkzeug in dieser Lage still mit dem falschen
+Zertifikat. Gemessen an einem Wegwerf-Schlüsselbund mit zwei Zertifikaten
+namens „Doppel-Signer": angefragt war `5CBEAAAA6A6C67A2EA514E2F28BF0516AE99819B`,
+signiert hat `C7AF8CB62D89BF49630564744B952BC7656841BB`, Exit 0, und die
+Erfolgszeile nannte den angefragten Fingerabdruck.
+
+Es bleiben zwei Wege: das nicht mehr gebrauchte Zertifikat aus dem
+Schlüsselbund nehmen, oder über `--sign-cert`/`--sign-key` signieren, wo das
+Zertifikat selbst angegeben wird statt sein Name.
+
+Was die Prüfung nicht leistet: sie sieht genau die Zertifikate, die
+`security find-identity` in dem Schlüsselbund findet, auf den sie gezeigt
+wurde. Mit `--keychain` ist das dieser eine, ohne die Suchliste des
+Benutzers. Ob `security cms` sich beim Signieren auf dieselbe Menge
+beschränkt, ist hier nicht gemessen und wird deshalb auch nicht zugesagt.
+
+**Nachher.** Signiert wird in eine Temporärdatei im Zielverzeichnis. Sie muss
+existieren, darf nicht leer sein, muss mit einer ASN.1-SEQUENCE anfangen, und
+ihr Inhalt wird mit `security cms -D` wieder ausgepackt und Byte für Byte mit
+dem gebauten Profil verglichen. Erst danach schiebt `os.replace` sie an den
+Ausgabepfad. Passt etwas davon nicht, fliegt die Temporärdatei raus und der
+Lauf endet mit Exit 2.
+
+Der Umweg hat einen Grund, und der heißt zweiter Bau. `openssl -out` und
+`security cms -o` kürzen ihre Ausgabedatei schon beim Öffnen auf null Bytes.
+Wer auf denselben Pfad noch einmal baut und dabei am Signieren scheitert,
+hatte vorher ein gültiges Profil dort liegen und danach eine leere Datei, die
+aussieht wie ein fertiges Profil. Über die Temporärdatei sieht der
+Ausgabepfad nur ein Ergebnis, das jede Prüfung bestanden hat, oder er bleibt
+unangetastet.
+
+Was der Umweg kostet, steht hier dazu, weil es zwei Fälle gibt, in denen er
+mehr braucht als `openssl -out`.
+
+Der eine ist das Verzeichnis: `os.replace` braucht Schreibrecht auf dem
+Verzeichnis, nicht nur auf der Zieldatei. Liegt die Ausgabe in einem
+Verzeichnis mit Modus 555, endet der Lauf mit Exit 2 und der Meldung, dass
+die Zwischendatei sich nicht anlegen ließ. Das Profil, das dort schon lag,
+bleibt unverändert liegen. Der alte Weg scheiterte in derselben Lage
+ebenfalls, nur mit einem `PermissionError` als Traceback: er legte
+`<name>.unsigned.mobileconfig` daneben und brauchte dafür dasselbe Recht.
+
+Der andere ist der lange Dateiname. Die Temporärdatei heißt nach ihrem Ziel,
+und `mkstemp` hängt acht Zufallszeichen und `.teil` an. Ungekürzt sprengte
+das NAME_MAX bei Ausgabenamen ab 242 Zeichen, wo der alte Weg mit seinen
+22 Zeichen für `.unsigned.mobileconfig` noch durchkam. Gemessen bei 244
+Zeichen: alter Weg Exit 0 und 2468 Bytes gültig signiert, ungekürzt
+`OSError: [Errno 63] File name too long`. Der Präfix wird deshalb auf
+`pathconf(PC_NAME_MAX)` abzüglich der 13 Zeichen von `mkstemp` gekürzt.
+Damit signieren beide Wege bei 244 Zeichen, und Namen bis 254 Zeichen, an
+denen der alte Weg scheiterte, gehen jetzt auch durch.
+
+Gearbeitet wird auf dem über `realpath` aufgelösten Pfad. Ist der
+Ausgabepfad ein symbolischer Link, schrieb `openssl -out` durch ihn hindurch
+in die verlinkte Datei und ließ den Link stehen. `os.replace` auf den
+Linknamen täte das nicht: es ersetzte den Link durch eine gewöhnliche Datei
+und ließe die verlinkte Datei bei 0 Bytes zurück, gemessen genau so. Mit
+`realpath` kommt heraus, was vorher herauskam. Zeigt der Link ins Leere,
+entsteht die Zieldatei, wie sie auch vorher entstanden wäre.
+
+**Und eine Grenze.** Der Signier-Aufruf hat ein Timeout von fünf Minuten.
+Die Vorabprüfung fängt den Tippfehler im Identitätsnamen ab, mehr nicht: ein
+gesperrter Schlüsselbund und ein Freigabe-Dialog ohne Fenstersitzung hängen
+`security cms` weiterhin, und ohne Timeout hängt der Bau mit, unbegrenzt und
+ohne Meldung. Nach Ablauf endet der Lauf mit Exit 2 und nennt beide
+Ursachen samt der Befehle dagegen. Fünf Minuten sind bewusst großzügig: beim
+ersten Zugriff auf den privaten Schlüssel fragt macOS in einem Dialog nach
+der Erlaubnis, und wer da gerade nicht am Rechner sitzt, soll deswegen keinen
+abgebrochenen Bau bekommen. Der PEM-Weg hat dieselbe Grenze; dort ist die
+übliche Ursache ein verschlüsselter Schlüssel, dessen Passphrase-Abfrage auf
+eine Antwort wartet.
+
+Ohne `-H SHA256` signiert `security cms` mit SHA-1. Das Werkzeug setzt den
+Schalter, nachgeprüft mit
+`openssl cms -cmsout -print -inform der -in profil.mobileconfig`.
 
 ## Verifikation auf macOS
 
@@ -52,6 +222,7 @@ openssl smime -verify -in profil.mobileconfig -inform der \
 - Niemals private Keys über den Chat akzeptieren oder speichern.
 - Niemals automatisch Self-Signed-Certs erzeugen und damit „signieren" — das schafft falsche Sicherheit.
 - Wenn ein User im Chat einen privaten Key paste-d hat, ablehnen und den User bitten, den Key auf seinem System zu lassen und nur den **Pfad** zu nennen.
+- Wo der Schlüssel im Schlüsselbund liegt, ist `--sign-identity` der bessere Vorschlag als `--sign-cert`: dann braucht niemand den Key zu exportieren, um zu signieren.
 
 ## Fehlerdiagnose
 
@@ -59,5 +230,8 @@ openssl smime -verify -in profil.mobileconfig -inform der \
 |---|---|
 | Profil installiert sich, zeigt aber „Nicht überprüft" | CA nicht im Trust-Store |
 | `openssl smime` schlägt fehl mit „unable to load signing key" | Key braucht Passphrase oder ist falsches Format |
+| `security cms` meldet „failed to encode data: unknown error -1" | Die Identität aus `--sign-identity` gibt es unter diesem Namen nicht |
+| `--sign-identity` findet nichts, `security find-identity -p codesigning` schon | Falsche Policy. Für Profile zählt `smime` oder `basic` |
+| Der Aufruf bricht nach fünf Minuten mit „hat nichts geliefert" ab | Der Schlüsselbund ist gesperrt oder der Freigabe-Dialog wartet auf eine Fenstersitzung. Beobachtet als blockierter Aufruf in `SecKeyCreateSignature`. Vorher `security unlock-keychain` und `security set-keychain-settings` setzen, und die Zugriffsliste über `-T /usr/bin/security` plus `set-key-partition-list` |
 | Gerät meldet „Profile installation failed: signature invalid" | falsche EKU / Key-Usage am Cert; oder Cert abgelaufen |
 | MDM-Push-Profil wird nicht akzeptiert | viele MDMs erwarten zusätzlich Encryption-Layer (separates Thema) |

@@ -85,6 +85,25 @@ Wähle den/die passenden `PayloadType`(s). Häufige:
 
 Bei mehreren Use-Cases: ein einziges Profil mit mehreren Payloads bauen — das ist Apple-Standard.
 
+**Drittanbieter-Domains.** Apples Schema beschreibt nur Apple-Domains. Chrome
+(`com.google.Chrome`), Office (`com.microsoft.office`), Zoom
+(`us.zoom.config`) und der Rest stehen dort nicht und werden unter
+`--validate-strict` als unbekannter PayloadType abgelehnt. Für die gibt es
+`--manifests`, das ProfileManifests als zweite Quelle zuschaltet:
+
+```bash
+python3 scripts/inspect_payload.py com.google.Chrome --manifests
+python3 scripts/build_mobileconfig.py spec.json -o profil.mobileconfig \
+  --validate-strict --manifests
+```
+
+Apple gewinnt: gefragt wird die zweite Quelle nur, wenn Apple den PayloadType
+gar nicht kennt. Sag dem User, wenn ein Payload aus ProfileManifests geprüft
+wurde. Die Sammlung ist von Mac-Admins gepflegt und nicht von den
+Herstellern, hat keine Lizenzangabe und wird deshalb nur zur Laufzeit geladen,
+nichts davon liegt im Skill. `--manifests` braucht Netz beim ersten Aufruf je
+Domain, danach reicht der Cache. Details in `references/schema-format.md`.
+
 ### Schritt 3 — Schema des PayloadType inspizieren
 
 ```bash
@@ -163,7 +182,35 @@ Bei Validierungsfehlern korrigiere die Spec mit dem User. Nicht-strikt (`ohne --
 
 Wenn der User kein Zertifikat hat und trotzdem ausrollen will: nicht stillschweigend unsigniert liefern, sondern die Regel nennen und auf `references/signing.md` verweisen. Signieren ersetzt den Installationsdialog nicht; das Gerät fragt weiter nach und zeigt das Profil nur dann als verifiziert, wenn es der signierenden CA vertraut.
 
-Mit X.509-Zertifikat signieren:
+Es gibt zwei Wege. Frag zuerst, wo der Schlüssel liegt.
+
+**Weg 1, Schlüssel liegt im macOS-Schlüsselbund.** Der Regelfall in
+Unternehmen: das Signaturzertifikat kommt per SCEP oder ADCS und ist nicht
+exportierbar. Dann signiert `security cms`, der Schlüssel bleibt im
+Schlüsselbund.
+
+```bash
+# Kandidaten zeigen lassen und den User auswählen lassen
+security find-identity -v -p smime
+security find-identity -v -p basic
+
+python3 scripts/build_mobileconfig.py spec.json \
+  -o profil.mobileconfig --offline \
+  --sign-identity "Profil-Signer 2026"
+```
+
+Nimm `-p smime` oder `-p basic`, nicht `-p codesigning`. Ein Profil-Signer
+trägt die EKU `emailProtection` oder gar keine einschränkende EKU und taucht
+unter der Code-Signing-Policy nicht auf. Wer dort nachsieht, hält ein
+vorhandenes Zertifikat für nicht vorhanden.
+
+Stehen in der Liste zwei Zertifikate mit demselben Namen, lehnt das Werkzeug
+ab, und der SHA-1 hilft dort nicht weiter. `security cms -N` wählt allein
+über den Namen und nimmt keinen Fingerabdruck entgegen, also ließe sich
+hinterher nicht sagen, welches unterschrieben hat. Schlag dann den PEM-Weg
+vor oder das Aufräumen des Schlüsselbunds, nicht den Fingerabdruck.
+
+**Weg 2, Schlüssel liegt als PEM-Datei vor.**
 
 ```bash
 python3 scripts/build_mobileconfig.py spec.json \
@@ -176,9 +223,14 @@ python3 scripts/build_mobileconfig.py spec.json \
 Voraussetzungen:
 - Cert und Key im PEM-Format
 - `openssl` muss im PATH sein
-- Das Zertifikat muss Code-Signing oder ein passendes EKU haben, idealerweise von einer auf dem Zielgerät vertrauten CA
+- Passende EKU am Zertifikat, `emailProtection` oder keine einschränkende, idealerweise von einer auf dem Zielgerät vertrauten CA
 
-**Wichtig:** Niemals private Keys über den Chat einsammeln. User soll Pfade auf seinem System angeben.
+**Wichtig:** Niemals private Keys über den Chat einsammeln. User soll Pfade
+auf seinem System angeben, oder besser den Namen einer Identität im
+Schlüsselbund. Liegt der Schlüssel im Schlüsselbund, schlag `--sign-identity`
+vor statt `--sign-cert`: dann muss ihn niemand zum Signieren exportieren.
+Beim ersten Aufruf fragt macOS in einem Dialog nach der Erlaubnis; über SSH
+gibt es diesen Dialog nicht und der Aufruf bleibt hängen.
 
 ### Schritt 8 — Liefern + Hinweise zur Installation
 
@@ -212,16 +264,36 @@ Top-Level `PayloadContent` ist ein Array. Beliebig viele Payloads sind erlaubt, 
 
 ### Declarative Device Management (DDM)
 
-Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Repo, **nicht** unter `mdm/profiles/`. Sie gehen nicht als `.mobileconfig`, sondern werden vom MDM-Server direkt als JSON-Deklarationen ans Gerät geschickt. Wenn der User danach fragt, weise ihn darauf hin — das ist ein anderer Workflow, den dieser Skill (noch) nicht abdeckt.
+Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Repo, **nicht** unter `mdm/profiles/`. Sie gehen nicht als `.mobileconfig`, sondern werden vom MDM-Server direkt als JSON-Deklarationen ans Gerät geschickt. Dieser Skill baut Profile und nichts sonst.
+
+Wenn der User danach fragt, sag ihm das, aber sag ihm auch, was der
+Unterschied praktisch bedeutet, statt nur abzugrenzen:
+
+- Apple beschreibt Profile und Declarations im **selben YAML-Format**, mit
+  denselben Feldern. Eine Spec beschreibt eine Absicht, kein Dateiformat, und
+  könnte beide Formate speisen. Der Validator hier würde unverändert laufen.
+- Für die meisten Payloads gibt es aber **keine Declaration**: der
+  `release`-Branch hat 121 PayloadTypes und 36 Configuration-Declarations. Wi-Fi,
+  VPN, Zertifikate und Restrictions sind nicht dabei.
+- Wo es beide gibt, ist die Abbildung eine Übersetzung und keine
+  Umbenennung. Beim Passcode heißt `allowSimple: false` in DDM
+  `RequireComplexPasscode: true`, also mit umgedrehtem Wert.
+- `com.apple.configuration.legacy` nimmt eine `ProfileURL` entgegen, ein
+  Profil bleibt darin ein Profil. Das ist der Weg, ein Profil in einer
+  DDM-Ausrollung zu benutzen, ohne so zu tun, als wäre es eine Declaration.
+
+Details in `references/ddm.md`. Behaupte nicht, der Skill könne DDM, und
+schreib keine Declaration von Hand zusammen, die nicht gegen ein Schema
+geprüft ist.
 
 ## Skript-Referenz
 
 | Skript | Zweck |
 |---|---|
 | `scripts/fetch_schema.py` | Lädt/cached YAML-Schemas vom GitHub-Repo. Unterstützt `--offline`, `--from-clone`, `--list`. |
-| `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter und Required-Only. |
+| `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter, Required-Only und mit `--manifests` auch Drittanbieter-Domains. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
-| `evals/run_tests.py` | Regressions-Test-Suite mit 6 realistischen Test-Cases (siehe unten). |
+| `evals/run_tests.py` | Regressions-Test-Suite mit 8 realistischen Test-Cases (siehe unten). |
 
 ## Beispiele
 
@@ -234,7 +306,7 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die drei Skripte (fetch/inspect/build) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
 
 ```bash
-python3 evals/run_tests.py        # alle 6 Evals
+python3 evals/run_tests.py        # alle 8 Evals
 python3 evals/run_tests.py -v     # ausführlich (zeigt jeden Check)
 python3 evals/run_tests.py --eval-id 4   # nur einen
 ```
@@ -249,6 +321,8 @@ Die Suite prüft konkret:
 | 4 | `invalid-input-rejected` | Negativ-Test: kaputter Input (ungültiger EncryptionType, falscher Typ für AutoJoin) MUSS in `--validate-strict` mit Exit-Code 2 abbrechen, dem dokumentierten Validierungs-Fehlschlag. Auf stderr steht ein Report unter `Validation issues:`, der EncryptionType und AutoJoin benennt, kein Traceback. **Keine** Output-Datei. |
 | 5 | `list-payload-types` | `fetch_schema.py --list` listet ≥50 Payloads aus dem Cache, sortiert, Top-Hits sind enthalten. |
 | 6 | `unknown-top-level-key-rejected` | Ein erfundener Key im `meta`-Block bricht strikt mit Exit-Code 2 ab, gemeldet als `top-level: unknown key '...'` und nicht als Payload-Fund, ohne Output-Datei. Ohne `--validate-strict` baut dieselbe Spec weiter durch, und `wifi_guest.json` bleibt strikt grün. |
+| 8 | `profilemanifests-normalisierung` | Übersetzung eines ProfileManifests in Apples Schema-Form: Domain, Plattform, Typen, Pflichtangabe, Wertelisten, Bereiche, Regex, Verschachtelung. Bedienelemente von ProfileCreator und die CommonPayloadKeys fallen raus. Eine Spec gegen das Manifest baut strikt durch, ein erfundener Key wird abgelehnt. Das Manifest im Test ist erfunden, es liegt keines aus dem fremden Repo hier. |
+| 7 | `signing-error-paths` | Fehlerpfade beider Signier-Wege, auf jeder Plattform prüfbar: unbekannte Schlüsselbund-Identität und nicht existierende PEM-Datei enden mit Exit-Code 2, mit Meldung statt Traceback und ohne Rückstände. Insbesondere bleibt keine unsignierte Zwischendatei mit dem WLAN-Passwort liegen, und beim zweiten Bau auf denselben Pfad überlebt das dort liegende gültige Profil einen gescheiterten Signier-Versuch. Die Schlüsselbund-Checks decken die Vorabprüfung ab, nicht das Aufräumen: dort wird abgebrochen, bevor eine Datei entsteht. Den Ausgabepfad prüft der PEM-Weg. Der Erfolgsfall des Schlüsselbund-Wegs ist nicht automatisiert, er braucht eine Identität im Schlüsselbund. |
 
 Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Einträge hat, hat Apple etwas am Repo geändert — Hinweis lesen, nicht reflexartig den Test anpassen.
 
@@ -258,4 +332,6 @@ Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Ei
 
 - `references/schema-format.md` — Erklärung des Apple-YAML-Schema-Aufbaus
 - `references/payload-cheatsheet.md` — kuratierte Liste der wichtigsten PayloadTypes mit Beispiel-Keys
-- `references/signing.md` — Hinweise zu Code-Signing-Zertifikaten und Trust-Chains
+- `references/signing.md` — Signieren über PEM-Dateien oder den macOS-Schlüsselbund, Zertifikatswahl, Trust-Chains, Fehlerdiagnose
+- `references/data-fields.md` — `<data>`-Felder und Base64
+- `references/ddm.md` — Declarative Device Management: was anders ist, was sich abbilden ließe und was nicht

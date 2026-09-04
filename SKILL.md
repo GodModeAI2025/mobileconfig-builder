@@ -39,7 +39,7 @@ Beim allerersten Lauf in einer Umgebung:
 python3 scripts/fetch_schema.py
 ```
 
-Lädt alle 127 Profil-Schemas vom `release`-Branch nach `~/.cache/mobileconfig-builder/release/`. Folgeläufe sind offline möglich (`--offline` Flag).
+Lädt alle Profil-Schemas vom `release`-Branch nach `~/.cache/mobileconfig-builder/release/`. Wie viele PayloadTypes daraus entstehen, steht in der Kopfzeile von `python3 scripts/fetch_schema.py --list`; eine feste Zahl steht hier bewusst nicht, weil Apple das Schema laufend ändert. Einzelne Dateien, die nicht geladen werden konnten, meldet das Skript als `WARN` und überspringt sie, der Cache kann also unvollständig sein. Folgeläufe sind offline möglich (`--offline` Flag).
 
 Bei Netzproblemen oder als Alternative: lokalen Clone benutzen:
 

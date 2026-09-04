@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from fetch_schema import fetch_all, ensure_yaml  # noqa: E402
+from fetch_schema import ensure_yaml, load_schema_map  # noqa: E402
 
 ALLOWED_TYPES = {
     "<string>": (str,),
@@ -60,26 +60,17 @@ _SCHEMA_CACHE: dict[str, dict] = {}
 
 def load_all_schemas(branch: str, refresh: bool = False,
                      offline: bool = False) -> dict[str, dict]:
-    """payloadtype → parsed YAML doc."""
+    """payloadtype → Schema-Dokument.
+
+    Die Auflösung mehrfach vergebener payloadtypes liegt in
+    fetch_schema.load_schema_map, damit inspect_payload.py und dieses
+    Skript garantiert dasselbe Schema sehen.
+    """
     global _SCHEMA_CACHE
     if _SCHEMA_CACHE and not refresh:
         return _SCHEMA_CACHE
-    ensure_yaml()
-    import yaml
-    files = fetch_all(branch, refresh=refresh, offline=offline)
-    out: dict[str, dict] = {}
-    for filename, body in files.items():
-        try:
-            doc = yaml.safe_load(body)
-        except yaml.YAMLError:
-            continue
-        if not isinstance(doc, dict):
-            continue
-        ptype = (doc.get("payload", {}) or {}).get("payloadtype")
-        if ptype:
-            out[ptype] = doc
-    _SCHEMA_CACHE = out
-    return out
+    _SCHEMA_CACHE = load_schema_map(branch, refresh=refresh, offline=offline)
+    return _SCHEMA_CACHE
 
 
 def get_schema(payloadtype: str, branch: str) -> dict | None:

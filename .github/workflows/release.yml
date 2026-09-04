@@ -1,0 +1,57 @@
+name: Release
+
+# Ausgeloest wird das hier vom Tag, nicht von einem Push auf einen Branch.
+# Reihenfolge beim Veroeffentlichen: VERSION und den CHANGELOG-Abschnitt auf
+# main haben, dann `git tag v<VERSION>` und `git push origin v<VERSION>`.
+# Dieser Workflow baut daraufhin das Artefakt und legt das Release als
+# Entwurf an. Veroeffentlicht wird es von Hand, damit der Text vor dem
+# Freischalten gegengelesen wird.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Artefakt bauen und an das Release haengen
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repo auschecken
+        uses: actions/checkout@v4
+
+      - name: Tag gegen VERSION und CHANGELOG pruefen
+        run: |
+          version="$(cat VERSION)"
+          echo "VERSION=$version, Tag=$GITHUB_REF_NAME"
+
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "FEHLER: Das Tag heisst $GITHUB_REF_NAME, VERSION sagt" \
+              "$version. Erwartet ist v$version."
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "FEHLER: CHANGELOG.md hat keinen Abschnitt '## [$version]'."
+            exit 1
+          fi
+          echo "OK: Tag, VERSION und CHANGELOG stimmen ueberein"
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Die Packaging-Logik steht in scripts/package_release.py, damit sie
+      # sich lokal ausfuehren und pruefen laesst. Hier wird sie nur gerufen.
+      - name: Artefakt bauen
+        run: python3 scripts/package_release.py dist/mobileconfig-builder.zip
+
+      - name: Entwurf des Releases anlegen und Artefakt anhaengen
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/mobileconfig-builder.zip
+          fail_on_unmatched_files: true

@@ -153,6 +153,8 @@ Speichere als `<projektname>.json`.
 python3 scripts/build_mobileconfig.py spec.json -o profil.mobileconfig --offline --validate-strict
 ```
 
+Strikt geprüft wird nicht nur jede Payload gegen ihr eigenes Schema, sondern auch der `meta`-Block gegen `TopLevel.yaml`: ein dort erfundener Key lässt den Build mit Exit-Code 2 abbrechen, bevor eine Datei entsteht.
+
 Bei Validierungsfehlern korrigiere die Spec mit dem User. Nicht-strikt (`ohne --validate-strict`) lässt unbekannte Keys durch — manchmal nötig, wenn Apple einen Key dokumentiert, der noch nicht im Schema ist; aber das ist die Ausnahme.
 
 ### Schritt 7 — Optional: Signieren
@@ -211,7 +213,7 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 | `scripts/fetch_schema.py` | Lädt/cached YAML-Schemas vom GitHub-Repo. Unterstützt `--offline`, `--from-clone`, `--list`. |
 | `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter und Required-Only. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
-| `evals/run_tests.py` | Regressions-Test-Suite mit 5 realistischen Test-Cases (siehe unten). |
+| `evals/run_tests.py` | Regressions-Test-Suite mit 6 realistischen Test-Cases (siehe unten). |
 
 ## Beispiele
 
@@ -224,7 +226,7 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die drei Skripte (fetch/inspect/build) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
 
 ```bash
-python3 evals/run_tests.py        # alle 5 Evals
+python3 evals/run_tests.py        # alle 6 Evals
 python3 evals/run_tests.py -v     # ausführlich (zeigt jeden Check)
 python3 evals/run_tests.py --eval-id 4   # nur einen
 ```
@@ -236,8 +238,9 @@ Die Suite prüft konkret:
 | 1 | `wifi-guest` | Standard-Pfad: WPA-WLAN aus Beispiel-Spec → valide Plist mit korrekten Typen, deterministischen UUIDs, allen Top-Level-Pflichtfeldern. |
 | 2 | `disable-apple-intelligence` | Realer Use-Case: 6 Apple-Intelligence-Restrictions auf macOS auf `false` setzen — alle Werte echte Booleans, keine iOS-only Keys leaken in macOS-Profile. |
 | 3 | `classroom-ipad-multi-payload` | Zwei Payloads (WLAN + Restrictions) in einem Profil, eindeutige UUIDs, beide Identifier reverse-DNS. |
-| 4 | `invalid-input-rejected` | Negativ-Test: kaputter Input (ungültiger EncryptionType, falscher Typ für AutoJoin) MUSS in `--validate-strict` zu non-zero Exit führen, präzisen Fehlern, **keine** Output-Datei. |
+| 4 | `invalid-input-rejected` | Negativ-Test: kaputter Input (ungültiger EncryptionType, falscher Typ für AutoJoin) MUSS in `--validate-strict` mit Exit-Code 2 abbrechen, dem dokumentierten Validierungs-Fehlschlag. Auf stderr steht ein Report unter `Validation issues:`, der EncryptionType und AutoJoin benennt, kein Traceback. **Keine** Output-Datei. |
 | 5 | `list-payload-types` | `fetch_schema.py --list` listet ≥50 Payloads aus dem Cache, sortiert, Top-Hits sind enthalten. |
+| 6 | `unknown-top-level-key-rejected` | Ein erfundener Key im `meta`-Block bricht strikt mit Exit-Code 2 ab, gemeldet als `top-level: unknown key '...'` und nicht als Payload-Fund, ohne Output-Datei. Ohne `--validate-strict` baut dieselbe Spec weiter durch, und `wifi_guest.json` bleibt strikt grün. |
 
 Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Einträge hat, hat Apple etwas am Repo geändert — Hinweis lesen, nicht reflexartig den Test anpassen.
 

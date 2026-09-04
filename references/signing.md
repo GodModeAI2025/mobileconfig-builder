@@ -158,6 +158,18 @@ aussieht wie ein fertiges Profil. Über die Temporärdatei sieht der
 Ausgabepfad nur ein Ergebnis, das jede Prüfung bestanden hat, oder er bleibt
 unangetastet.
 
+**Und eine Grenze.** Der Signier-Aufruf hat ein Timeout von fünf Minuten.
+Die Vorabprüfung fängt den Tippfehler im Identitätsnamen ab, mehr nicht: ein
+gesperrter Schlüsselbund und ein Freigabe-Dialog ohne Fenstersitzung hängen
+`security cms` weiterhin, und ohne Timeout hängt der Bau mit, unbegrenzt und
+ohne Meldung. Nach Ablauf endet der Lauf mit Exit 2 und nennt beide
+Ursachen samt der Befehle dagegen. Fünf Minuten sind bewusst großzügig: beim
+ersten Zugriff auf den privaten Schlüssel fragt macOS in einem Dialog nach
+der Erlaubnis, und wer da gerade nicht am Rechner sitzt, soll deswegen keinen
+abgebrochenen Bau bekommen. Der PEM-Weg hat dieselbe Grenze; dort ist die
+übliche Ursache ein verschlüsselter Schlüssel, dessen Passphrase-Abfrage auf
+eine Antwort wartet.
+
 Ohne `-H SHA256` signiert `security cms` mit SHA-1. Das Werkzeug setzt den
 Schalter, nachgeprüft mit
 `openssl cms -cmsout -print -inform der -in profil.mobileconfig`.
@@ -189,6 +201,6 @@ openssl smime -verify -in profil.mobileconfig -inform der \
 | `openssl smime` schlägt fehl mit „unable to load signing key" | Key braucht Passphrase oder ist falsches Format |
 | `security cms` meldet „failed to encode data: unknown error -1" | Die Identität aus `--sign-identity` gibt es unter diesem Namen nicht |
 | `--sign-identity` findet nichts, `security find-identity -p codesigning` schon | Falsche Policy. Für Profile zählt `smime` oder `basic` |
-| Der Aufruf hängt ohne Meldung | Der Schlüsselbund ist gesperrt oder der Freigabe-Dialog wartet auf eine Fenstersitzung. Beobachtet als blockierter Aufruf in `SecKeyCreateSignature`. Vorher `security unlock-keychain` und `set-key-partition-list` setzen |
+| Der Aufruf bricht nach fünf Minuten mit „hat nichts geliefert" ab | Der Schlüsselbund ist gesperrt oder der Freigabe-Dialog wartet auf eine Fenstersitzung. Beobachtet als blockierter Aufruf in `SecKeyCreateSignature`. Vorher `security unlock-keychain` und `security set-keychain-settings` setzen, und die Zugriffsliste über `-T /usr/bin/security` plus `set-key-partition-list` |
 | Gerät meldet „Profile installation failed: signature invalid" | falsche EKU / Key-Usage am Cert; oder Cert abgelaufen |
 | MDM-Push-Profil wird nicht akzeptiert | viele MDMs erwarten zusätzlich Encryption-Layer (separates Thema) |

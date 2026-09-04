@@ -102,6 +102,17 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   `security cms` startet. Danach prueft er die fertige Datei: nicht leer,
   faengt mit einer ASN.1-SEQUENCE an, und `security cms -D` liefert Byte fuer
   Byte das gebaute Profil zurueck.
+- **Der Signier-Aufruf hatte kein Timeout.** Die Identitaetssuche hatte eins
+  (`IDENTITY_TIMEOUT=30`), das Signieren nicht. Erledigt war damit der
+  Tippfehler im Identitaetsnamen, den die Vorabpruefung abfaengt. Ein
+  gesperrter Schluesselbund oder ein Freigabe-Dialog ohne Fenstersitzung
+  haengte den Bau weiterhin unbegrenzt und ohne Meldung. Beide Signier-Wege
+  brechen jetzt nach fuenf Minuten mit Exit 2 ab und nennen die Ursachen samt
+  Gegenmitteln: `security unlock-keychain`, `security set-keychain-settings`
+  und die Zugriffsliste ueber `-T /usr/bin/security` plus
+  `set-key-partition-list`, beim PEM-Weg die Passphrase-Abfrage von openssl.
+  Fuenf Minuten sind bewusst grosszuegig, damit der Freigabe-Dialog beim
+  ersten Aufruf nicht in einen abgebrochenen Bau laeuft.
 - **`security cms` signierte mit SHA-1.** Ohne `-H SHA256` ist SHA-1 die
   Vorgabe, nachgewiesen mit `openssl cms -cmsout -print`. Der Schalter ist
   jetzt gesetzt.

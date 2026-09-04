@@ -384,6 +384,18 @@ IDENTITY_TIMEOUT = 30
 # das Vertrauen.
 IDENTITY_POLICIES_ALLE = ("smime", "basic", "codesigning")
 
+# Auch der Signier-Aufruf braucht eine Grenze. Die Vorabpruefung faengt den
+# Tippfehler im Identitaetsnamen ab, mehr nicht: ein gesperrter Schluesselbund
+# oder ein Freigabe-Dialog ohne Fenstersitzung haengt `security cms` weiterhin,
+# und ohne timeout haengt der Bau mit, ohne Meldung, unbegrenzt.
+#
+# Fuenf Minuten, und die Zahl ist ein Kompromiss. Kuerzer waere gefaehrlich:
+# beim ersten Zugriff auf den privaten Schluessel fragt macOS in einem Dialog
+# nach der Erlaubnis, und wer da gerade nicht am Rechner sitzt, soll deswegen
+# keinen abgebrochenen Bau bekommen. Laenger waere sinnlos: wo niemand
+# antwortet, antwortet auch in einer halben Stunde niemand.
+SIGN_TIMEOUT = 300
+
 _IDENTITY_CACHE: dict[tuple[str, bool], list] = {}
 
 
@@ -543,7 +555,7 @@ def _wie_das_werkzeug_es_angelegt_haette(pfad: Path) -> None:
 
 def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
                werkzeug: str, nachspann: str = "",
-               nachpruefung=None) -> None:
+               nachpruefung=None, haenger_hinweis: str = "") -> None:
     """Ruft das Signier-Werkzeug und schickt das Profil über stdin.
 
     Über stdin, damit das unsignierte Profil mit seinen Klartext-Passwörtern
@@ -566,6 +578,11 @@ def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
     werfen; sie läuft vor dem Verschieben, sonst landet eine verworfene
     Signatur trotzdem für einen Moment auf dem Zielpfad und nimmt das alte
     Profil mit.
+
+    Der Aufruf hat ein Timeout. Ohne das hängt ein gesperrter Schlüsselbund
+    den Bau unbegrenzt und ohne Meldung, und das ist der Fall, den die
+    Fehlerdiagnose in references/signing.md als selbst erlebt beschreibt.
+    `haenger_hinweis` sagt, was für dieses Werkzeug dahinterstecken kann.
     """
     signed_path.parent.mkdir(parents=True, exist_ok=True)
     fd, roh = tempfile.mkstemp(dir=str(signed_path.parent),
@@ -576,9 +593,16 @@ def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
         cmd = cmd_bauen(teil)
         try:
             proc = subprocess.run(cmd, input=profil, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE)
+                                  stderr=subprocess.PIPE,
+                                  timeout=SIGN_TIMEOUT)
         except OSError as fehler:
             raise SchemaError(f"{cmd[0]} ließ sich nicht starten: {fehler}")
+        except subprocess.TimeoutExpired:
+            text = (f"{werkzeug} hat nach {SIGN_TIMEOUT} Sekunden nichts "
+                    f"geliefert und wurde abgebrochen. Signiert wurde nicht.")
+            if haenger_hinweis:
+                text += f"\n{haenger_hinweis}"
+            raise SchemaError(text)
 
         meldung = proc.stderr.decode("utf-8", "replace").strip()
         if proc.returncode != 0:
@@ -641,7 +665,13 @@ def sign_profile(profil: bytes, signed_path: Path,
             cmd += ["-certfile", str(ca_chain)]
         return cmd
 
-    _signieren(bauen, profil, signed_path, "openssl smime -sign")
+    _signieren(bauen, profil, signed_path, "openssl smime -sign",
+               haenger_hinweis=(
+                   "Meist steckt eine Passphrase dahinter: ist der private "
+                   "Schlüssel verschlüsselt, fragt openssl danach und wartet. "
+                   "Über SSH oder in CI antwortet dort niemand. Den Schlüssel "
+                   "vorher entschlüsseln oder eine Datei ohne Passphrase "
+                   "verwenden."))
 
 
 def sign_profile_keychain(profil: bytes, signed_path: Path, identity: str,
@@ -669,11 +699,25 @@ def sign_profile_keychain(profil: bytes, signed_path: Path, identity: str,
             cmd += ["-k", str(keychain)]
         return cmd
 
+    kette = f" {keychain}" if keychain else ""
     _signieren(bauen, profil, signed_path, "security cms -S",
                nachspann=(f"Angefragt war: {identity}\n"
                           + _identitaeten_text(list_identities(
                               keychain=keychain))),
-               nachpruefung=lambda ziel: _pruefe_cms_inhalt(profil, ziel))
+               nachpruefung=lambda ziel: _pruefe_cms_inhalt(profil, ziel),
+               haenger_hinweis=(
+                   "Zwei Ursachen kommen dafür in Frage, beide außerhalb "
+                   "dieses Werkzeugs:\n"
+                   "  - Der Schlüsselbund ist gesperrt. Vorher "
+                   f"`security unlock-keychain{kette}`, und damit er nicht "
+                   "nach Leerlauf wieder zufällt "
+                   f"`security set-keychain-settings{kette}`.\n"
+                   "  - Der Schlüssel hat keine Freigabe für "
+                   "/usr/bin/security, und der Dialog wartet auf eine "
+                   "Fenstersitzung, die es über SSH oder in CI nicht gibt. "
+                   "Beim Import `-T /usr/bin/security` setzen und danach "
+                   "`security set-key-partition-list -S apple-tool:,apple: "
+                   f"-s -k <Passwort>{kette}`."))
 
 
 def _pruefe_cms_inhalt(profil: bytes, signiert: Path) -> None:
@@ -692,8 +736,15 @@ def _pruefe_cms_inhalt(profil: bytes, signiert: Path) -> None:
     Löschen muss die Funktion deshalb nichts mehr: was hier durchfällt, hat
     den Zielpfad nie gesehen.
     """
-    proc = subprocess.run([SECURITY_TOOL, "cms", "-D", "-i", str(signiert)],
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        proc = subprocess.run([SECURITY_TOOL, "cms", "-D", "-i", str(signiert)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=SIGN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise SchemaError(
+            f"`security cms -D` hat nach {SIGN_TIMEOUT} Sekunden nichts "
+            f"geliefert. Ob die Signatur das gebaute Profil enthält, ist "
+            f"damit ungeprüft, also wurde nichts geschrieben.")
     if proc.returncode != 0 or proc.stdout != profil:
         meldung = proc.stderr.decode("utf-8", "replace").strip()
         raise SchemaError(

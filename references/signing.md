@@ -114,8 +114,34 @@ codesigning und ohne `-v`, damit auch ein frisch importiertes, noch nicht
 vertrautes Zertifikat zählt. Kennt der Schlüsselbund den Namen nicht, bricht
 der Bau ab, bevor `security cms` überhaupt startet. Ein Tippfehler im Namen
 soll keinen Bau aufhängen. Ein SHA-1 wird hier auf den Namen aufgelöst, den
-`cms -N` erwartet, und ein Name, der auf mehrere Zertifikate passt, wird
-abgelehnt statt geraten.
+`cms -N` erwartet.
+
+### Zwei Zertifikate mit demselben Namen
+
+`security cms -N` wählt allein über den Namen des Zertifikats. Einen
+Fingerabdruck nimmt die Option nicht entgegen. Stehen zwei Zertifikate mit
+demselben Common Name im Schlüsselbund, der abgelaufene Signer von letztem
+Jahr und der neue, dann entscheidet `security`, welches der beiden
+unterschreibt, und sagt es nicht.
+
+`--sign-identity` lehnt diesen Fall ab, egal ob die Angabe ein Name oder ein
+SHA-1 war. Ein SHA-1 sieht aus wie eine eindeutige Auswahl, ist aber keine:
+er wird auf den Namen zurückübersetzt, und der Name ist mehrdeutig. Bis
+Welle 5 signierte das Werkzeug in dieser Lage still mit dem falschen
+Zertifikat. Gemessen an einem Wegwerf-Schlüsselbund mit zwei Zertifikaten
+namens „Doppel-Signer": angefragt war `5CBEAAAA6A6C67A2EA514E2F28BF0516AE99819B`,
+signiert hat `C7AF8CB62D89BF49630564744B952BC7656841BB`, Exit 0, und die
+Erfolgszeile nannte den angefragten Fingerabdruck.
+
+Es bleiben zwei Wege: das nicht mehr gebrauchte Zertifikat aus dem
+Schlüsselbund nehmen, oder über `--sign-cert`/`--sign-key` signieren, wo das
+Zertifikat selbst angegeben wird statt sein Name.
+
+Was die Prüfung nicht leistet: sie sieht genau die Zertifikate, die
+`security find-identity` in dem Schlüsselbund findet, auf den sie gezeigt
+wurde. Mit `--keychain` ist das dieser eine, ohne die Suchliste des
+Benutzers. Ob `security cms` sich beim Signieren auf dieselbe Menge
+beschränkt, ist hier nicht gemessen und wird deshalb auch nicht zugesagt.
 
 **Nachher.** Die fertige Datei muss existieren, darf nicht leer sein, muss mit
 einer ASN.1-SEQUENCE anfangen, und der Inhalt wird mit `security cms -D`

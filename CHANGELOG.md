@@ -63,6 +63,18 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 
 ### Behoben
 
+- **`--sign-identity` mit einem SHA-1 signierte mit dem falschen
+  Zertifikat.** Der Fingerabdruck wurde auf den Namen zurueckuebersetzt und
+  ungeprueft an `security cms -N` gereicht, das ausschliesslich nach Namen
+  waehlt. Bei zwei Zertifikaten mit demselben Common Name unterschrieb
+  irgendeines von beiden, der Lauf endete mit Exit 0 und nannte in der
+  Erfolgszeile den angefragten Fingerabdruck. Gemessen an einem
+  Wegwerf-Schluesselbund: angefragt `5CBEAAAA6A6C67A2EA514E2F28BF0516AE99819B`,
+  signiert hat `C7AF8CB62D89BF49630564744B952BC7656841BB`. Der Fall wird
+  jetzt auf beiden Wegen hinein abgelehnt, mit den betroffenen
+  Fingerabdruecken in der Meldung. Ein Fingerabdruck ist fuer `cms -N` keine
+  Auswahl, deshalb bietet die Meldung ihn nicht mehr als Ausweg an;
+  `references/signing.md` sagt das jetzt ebenfalls so.
 - **Kein unsigniertes Zwischenprodukt mehr auf der Platte.** Bisher schrieb
   der Build `<output>.unsigned.mobileconfig`, rief openssl und loeschte die
   Datei erst danach. Scheiterte der Aufruf, blieb sie mit Modus 0644 liegen,

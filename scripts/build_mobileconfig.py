@@ -449,6 +449,34 @@ def _identitaeten_text(identitaeten: list[tuple[str, str]]) -> str:
     return "\n".join(zeilen)
 
 
+def _mehrdeutig(name: str, alle: list[tuple[str, str]],
+                gueltige: list[tuple[str, str]]) -> SchemaError:
+    """Die Absage, wenn zwei Zertifikate denselben Namen tragen.
+
+    `security cms -N` wählt allein über den Namen. Steht der Name zweimal im
+    Schlüsselbund, entscheidet `security`, welches der beiden unterschreibt,
+    und sagt es nicht. Ein Fingerabdruck hilft dort nicht weiter: die Option
+    nimmt keinen entgegen. Deshalb endet der Bau hier, statt zu signieren und
+    hinterher einen Signierer zu melden, der es vielleicht nicht war.
+    """
+    betroffen = sorted(sha1 for sha1, kandidat in alle if kandidat == name)
+    zeilen = [
+        f'Der Schlüsselbund hat {len(betroffen)} Zertifikate mit dem Namen '
+        f'"{name}":',
+    ]
+    zeilen += [f"  {sha1}" for sha1 in betroffen]
+    zeilen.append(
+        "Welches davon signiert, lässt sich nicht bestimmen: `security cms "
+        "-N` wählt nur über den Namen, ein Fingerabdruck ist dort keine "
+        "Auswahl. Deshalb wird nicht signiert.")
+    zeilen.append(
+        "Es bleiben zwei Wege: das nicht mehr gebrauchte Zertifikat aus dem "
+        "Schlüsselbund nehmen, oder über --sign-cert/--sign-key mit "
+        "PEM-Dateien signieren, wo das Zertifikat selbst angegeben wird.")
+    zeilen.append(_identitaeten_text(gueltige))
+    return SchemaError("\n".join(zeilen))
+
+
 def resolve_identity(wunsch: str, keychain: Path | None = None) -> str:
     """Übersetzt die Angabe aus --sign-identity in den Namen für `cms -N`.
 
@@ -457,8 +485,14 @@ def resolve_identity(wunsch: str, keychain: Path | None = None) -> str:
     `security cms` nimmt einen Zertifikatsnamen, keinen Fingerabdruck. Wer
     einen SHA-1 angibt, bekommt ihn hier aufgelöst.
 
-    Ein Name, der auf mehrere Zertifikate passt, wird abgelehnt statt geraten:
-    `security cms` griffe sonst eines davon, ohne zu sagen welches.
+    Ein Name, der auf mehrere Zertifikate passt, wird abgelehnt statt geraten,
+    und zwar auf beiden Wegen hinein. Über den Namen war das immer so. Über
+    den SHA-1 nicht: der wurde auf den Namen zurückübersetzt und ungeprüft an
+    `cms -N` gereicht, das ausschließlich nach Namen wählt. Gemessen an einem
+    Wegwerf-Schlüsselbund mit zwei Zertifikaten namens „Doppel-Signer":
+    angefragt war 5CBEAAAA…, signiert hat C7AF8CB6…, und der Lauf meldete
+    Exit 0 samt dem angefragten Fingerabdruck. Ein Fingerabdruck ist für
+    `cms -N` keine Auswahl, deshalb ist er auch hier keine.
 
     Und ein Name, den der Schlüsselbund gar nicht kennt, wird abgelehnt, bevor
     `security cms` überhaupt startet. Mit einer unbekannten Identität meldet
@@ -469,18 +503,18 @@ def resolve_identity(wunsch: str, keychain: Path | None = None) -> str:
     alle = list_identities(keychain=keychain, nur_gueltige=False)
     gueltige = list_identities(keychain=keychain)
     if _SHA1_HEX.match(wunsch):
-        for sha1, name in alle:
-            if sha1 == wunsch.upper():
-                return name
-        raise SchemaError(
-            f"Kein Zertifikat mit dem SHA-1 {wunsch} im Schlüsselbund.\n"
-            + _identitaeten_text(gueltige))
+        name = next((kandidat for sha1, kandidat in alle
+                     if sha1 == wunsch.upper()), None)
+        if name is None:
+            raise SchemaError(
+                f"Kein Zertifikat mit dem SHA-1 {wunsch} im Schlüsselbund.\n"
+                + _identitaeten_text(gueltige))
+        if sum(1 for _, kandidat in alle if kandidat == name) > 1:
+            raise _mehrdeutig(name, alle, gueltige)
+        return name
     passend = {sha1 for sha1, name in alle if name == wunsch}
     if len(passend) > 1:
-        raise SchemaError(
-            f"'{wunsch}' passt auf {len(passend)} Zertifikate. Bitte den "
-            f"SHA-1 angeben statt des Namens.\n"
-            + _identitaeten_text(gueltige))
+        raise _mehrdeutig(wunsch, alle, gueltige)
     if not passend:
         raise SchemaError(
             f"Der Schlüsselbund kennt keine Identität namens '{wunsch}'. "

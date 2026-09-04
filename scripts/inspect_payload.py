@@ -20,25 +20,21 @@ from pathlib import Path
 
 # Reuse fetch_schema utilities
 sys.path.insert(0, str(Path(__file__).parent))
-from fetch_schema import fetch_all, ensure_yaml, index_payloads  # noqa: E402
+from fetch_schema import index_payloads, load_schema_map  # noqa: E402
 
 
 def find_schema(payloadtype: str, branch: str, refresh: bool = False,
                 offline: bool = False):
-    ensure_yaml()
-    import yaml
-    files = fetch_all(branch, refresh=refresh, offline=offline)
-    for filename, body in files.items():
-        try:
-            doc = yaml.safe_load(body)
-        except yaml.YAMLError:
-            continue
-        if not isinstance(doc, dict):
-            continue
-        payload = doc.get("payload", {}) or {}
-        if payload.get("payloadtype") == payloadtype:
-            return filename, doc
-    return None, None
+    """Gibt (Quelldateien, Schema-Dokument) zurück.
+
+    Nutzt dieselbe Auflösung wie build_mobileconfig.py: Dateien, die sich
+    einen payloadtype teilen, werden vereint statt willkürlich ausgewählt.
+    """
+    schemas = load_schema_map(branch, refresh=refresh, offline=offline)
+    doc = schemas.get(payloadtype)
+    if doc is None:
+        return [], None
+    return doc.get("_sources", []), doc
 
 
 def fmt_type(key: dict) -> str:
@@ -133,8 +129,8 @@ def main():
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
-    filename, doc = find_schema(args.payloadtype, args.branch,
-                                refresh=args.refresh, offline=args.offline)
+    sources, doc = find_schema(args.payloadtype, args.branch,
+                               refresh=args.refresh, offline=args.offline)
     if doc is None:
         # fuzzy hint
         idx = index_payloads(args.branch, offline=args.offline)
@@ -150,7 +146,8 @@ def main():
 
     if args.json:
         print(json.dumps({
-            "filename": filename,
+            "filename": ", ".join(sources),
+            "sources": sources,
             "payloadtype": payload.get("payloadtype"),
             "title": doc.get("title"),
             "description": doc.get("description"),
@@ -161,7 +158,11 @@ def main():
         return
 
     print(f"# {doc.get('title','')}  ({payload.get('payloadtype')})")
-    print(f"# Source: {filename}")
+    label = "Sources" if len(sources) > 1 else "Source"
+    print(f"# {label}: {', '.join(sources)}")
+    if len(sources) > 1:
+        print(f"# {len(sources)} Schema-Dateien teilen sich diesen "
+              f"PayloadType, die Keys sind hier vereint.")
     if doc.get("description"):
         print(f"# {doc['description']}")
     print(f"# Supported on: {', '.join(inherited_os.keys())}")

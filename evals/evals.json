@@ -64,10 +64,11 @@
     {
       "id": 4,
       "prompt": "Ich gebe dir absichtlich kaputten Input: PayloadType com.apple.wifi.managed mit EncryptionType='SUPERWPA' (gibts nicht) und AutoJoin='ja' (string statt boolean). Bau das mit strikter Validierung — was passiert?",
-      "expected_output": "Strict-Mode-Build muss FAILEN (Exit-Code != 0). Die Fehlermeldung muss klar benennen, dass EncryptionType nicht im erlaubten Wertebereich liegt UND dass AutoJoin den falschen Typ hat. Es darf KEINE .mobileconfig-Datei erzeugt werden.",
+      "expected_output": "Strict-Mode-Build muss FAILEN, und zwar mit dem dokumentierten Validierungs-Exit-Code 2, nicht mit einem beliebigen Absturz. Die Fehlermeldung muss klar benennen, dass EncryptionType nicht im erlaubten Wertebereich liegt UND dass AutoJoin den falschen Typ hat. Es darf KEINE .mobileconfig-Datei erzeugt werden.",
       "files": [],
       "expectations": [
-        "Build script exits with non-zero exit code in strict mode",
+        "Build script exits with exit code 2 in strict mode (the documented validation failure, not an arbitrary crash)",
+        "Error output is a validation report and contains no Python traceback",
         "Error output mentions 'EncryptionType' by name",
         "Error output mentions the invalid value 'SUPERWPA' or the allowed list (WEP/WPA/WPA2/WPA3/Any/None)",
         "Error output mentions 'AutoJoin' by name",
@@ -89,6 +90,20 @@
         "Output lists at least 50 distinct PayloadTypes",
         "Each line shows OS support markers like [iOS,macOS,...] or similar",
         "Output is sorted alphabetically by PayloadType"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "In meiner Spec steht auf oberster Ebene ein Key, den Apple gar nicht kennt: 'TotallyMadeUpKey'. Bau das mit strikter Validierung. Was passiert?",
+      "expected_output": "Strict-Mode-Build muss failen (Exit-Code 2) und den erfundenen Key als Top-Level-Problem benennen, nicht als Payload-Problem. Es darf keine .mobileconfig entstehen. Ohne --validate-strict laeuft derselbe Input weiter durch, das ist die dokumentierte Bedeutung des Flags. Specs, deren Top-Level-Keys alle aus TopLevel.yaml stammen, muessen unveraendert bauen.",
+      "files": ["assets/examples/wifi_guest.json"],
+      "expectations": [
+        "Strict build exits with code 2 for an invented top-level key",
+        "Error output names the invented key 'TotallyMadeUpKey'",
+        "Error output marks the finding as top-level, not as a payload finding",
+        "No .mobileconfig output file is created in strict mode",
+        "The same spec still builds without --validate-strict",
+        "A spec whose top-level keys all come from TopLevel.yaml still builds in strict mode"
       ]
     }
   ]

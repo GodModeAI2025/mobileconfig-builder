@@ -1,0 +1,18 @@
+mobileconfig-builder
+Copyright 2026 Mark Zimmermann
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+Third-party material
+--------------------
+
+Apple device-management schemas
+  https://github.com/apple/device-management
+  Copyright (c) 2022-2026 Apple Inc.
+  MIT License (see LICENSE.txt in that repository)
+
+  scripts/fetch_schema.py downloads the YAML files under mdm/profiles/ at
+  runtime and caches them in ~/.cache/mobileconfig-builder/. None of these
+  files are vendored into this repository, and none are redistributed with
+  it. The cache holds a verbatim copy of Apple's files; the MIT license
+  above applies to that copy.

@@ -68,7 +68,7 @@ Create a JSON file with your profile configuration:
 
 ## Features
 
-- **Schema-validated**: Every key checked against Apple's official YAML definitions
+- **Schema-validated**: Every key checked against Apple's official YAML definitions, top-level fields against `TopLevel.yaml` and each payload against its own schema
 - **Deterministic UUIDs**: Same input always produces the same UUIDs (safe for re-deployment)
 - **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile
 - **OS-aware inspection**: Filter keys by target platform (macOS, iOS, tvOS, etc.)
@@ -101,7 +101,7 @@ Unsigned profiles show as "Not Verified" on Apple devices. For production/MDM us
 ## Testing
 
 ```bash
-python3 evals/run_tests.py        # Run all 5 eval tests
+python3 evals/run_tests.py        # Run all 6 eval tests
 python3 evals/run_tests.py -v     # Verbose output
 python3 evals/run_tests.py --eval-id 4   # Run a single test
 ```
@@ -127,4 +127,10 @@ Apple's newer DDM declarations use a different format (JSON, not `.mobileconfig`
 
 ## License
 
-MIT
+Apache License 2.0, see [LICENSE](LICENSE).
+
+The Apple profile schemas this tool validates against come from
+[apple/device-management](https://github.com/apple/device-management) and are
+MIT-licensed by Apple Inc. They are fetched at runtime into
+`~/.cache/mobileconfig-builder/` and are not part of this repository. See
+[NOTICE](NOTICE).

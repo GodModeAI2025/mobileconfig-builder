@@ -122,37 +122,157 @@ def fetch_all(branch: str, refresh: bool = False,
     return out
 
 
-def index_payloads(branch: str, refresh: bool = False,
-                   offline: bool = False) -> list[dict]:
-    """Erzeugt einen Index: payloadtype → filename + Metadaten."""
+def parse_all(branch: str, refresh: bool = False,
+              offline: bool = False) -> dict[str, dict]:
+    """Lädt alle Profil-YAMLs und gibt {filename: geparstes Dokument} zurück."""
     ensure_yaml()
     import yaml
-    files = fetch_all(branch, refresh=refresh, offline=offline)
-    index = []
-    for filename, body in files.items():
+    out: dict[str, dict] = {}
+    for filename, body in fetch_all(branch, refresh=refresh,
+                                    offline=offline).items():
         try:
             doc = yaml.safe_load(body)
         except yaml.YAMLError:
             continue
-        if not isinstance(doc, dict):
-            continue
-        payload = doc.get("payload", {}) or {}
-        ptype = payload.get("payloadtype")
+        if isinstance(doc, dict):
+            out[filename] = doc
+    return out
+
+
+def _merge_keydef(variants: list[dict], variant_count: int) -> dict:
+    """Fasst die Definitionen desselben Keys aus mehreren Varianten zusammen.
+
+    Die erste Definition (aus der Basisdatei) gibt die Struktur vor.
+    Wo Varianten sich widersprechen, gewinnt immer die weitere Fassung,
+    damit die Vereinigung kein Profil ablehnt, das gegen eine einzelne
+    Variante gültig wäre.
+    """
+    merged = dict(variants[0])
+
+    # required nur, wenn jede beteiligte Datei den Key kennt und verlangt
+    if len(variants) < variant_count or \
+            any(v.get("presence") != "required" for v in variants):
+        if merged.get("presence") == "required":
+            merged["presence"] = "optional"
+
+    # rangelist: Vereinigung, aber nur wenn jede Variante eine Liste vorgibt
+    if all("rangelist" in v for v in variants):
+        values: list = []
+        for v in variants:
+            for item in v["rangelist"]:
+                if item not in values:
+                    values.append(item)
+        merged["rangelist"] = values
+    else:
+        merged.pop("rangelist", None)
+
+    # range: weitester gemeinsamer Bereich
+    if all("range" in v for v in variants):
+        mins = [(v["range"] or {}).get("min") for v in variants]
+        maxs = [(v["range"] or {}).get("max") for v in variants]
+        widened: dict = {}
+        if all(m is not None for m in mins):
+            widened["min"] = min(mins)
+        if all(m is not None for m in maxs):
+            widened["max"] = max(maxs)
+        if widened:
+            merged["range"] = widened
+        else:
+            merged.pop("range", None)
+    else:
+        merged.pop("range", None)
+
+    # format: nur behalten, wenn alle Varianten dieselbe Regex vorgeben
+    formats = {v.get("format") for v in variants}
+    if len(formats) != 1 or None in formats:
+        merged.pop("format", None)
+
+    return merged
+
+
+def merge_schema_variants(payloadtype: str,
+                          docs_by_file: dict[str, dict]) -> dict:
+    """Vereint mehrere YAML-Dateien mit demselben payloadtype zu einem Schema.
+
+    Apple vergibt denselben payloadtype an mehrere Dateien: com.apple.MCX
+    kommt in sechs Varianten vor (Accounts, EnergySaver, FileVault2,
+    Mobility, TimeServer, WiFi), com.apple.extensiblesso in zwei (generisch
+    und Kerberos). Ein Payload dieses Typs darf Keys aus jeder Variante
+    tragen. Wer eine einzelne Datei auswählt, weist gültige Profile zurück,
+    deshalb ist die Vereinigung die einzige Auflösung, die keine falschen
+    Fehler erzeugt. Das Ergebnis trägt die Herkunft in `_sources`.
+    """
+    filenames = sorted(docs_by_file)
+    base_name = f"{payloadtype}.yaml"
+    if base_name in docs_by_file:
+        filenames.remove(base_name)
+        filenames.insert(0, base_name)
+
+    merged = dict(docs_by_file[filenames[0]])
+    merged["_sources"] = filenames
+    if len(filenames) == 1:
+        return merged
+
+    order: list[str] = []
+    variants: dict[str, list[dict]] = {}
+    for filename in filenames:
+        for kdef in docs_by_file[filename].get("payloadkeys") or []:
+            if not isinstance(kdef, dict) or not kdef.get("key"):
+                continue
+            name = kdef["key"]
+            if name not in variants:
+                variants[name] = []
+                order.append(name)
+            variants[name].append(kdef)
+
+    merged["payloadkeys"] = [
+        _merge_keydef(variants[name], len(filenames)) for name in order
+    ]
+
+    # Titel und Beschreibung der Basisdatei beschreiben nur eine Variante und
+    # wären für die Vereinigung schlicht falsch.
+    titles = [docs_by_file[f].get("title", "") for f in filenames]
+    merged["title"] = " + ".join(t for t in titles if t)
+    descriptions = {docs_by_file[f].get("description", "") for f in filenames}
+    if len(descriptions) > 1:
+        merged["description"] = ""
+    return merged
+
+
+def load_schema_map(branch: str, refresh: bool = False,
+                    offline: bool = False) -> dict[str, dict]:
+    """payloadtype → Schema-Dokument, kollidierende Dateien vereint.
+
+    Gemeinsame Grundlage für inspect_payload.py und build_mobileconfig.py:
+    beide sehen damit für jeden PayloadType dasselbe Schema.
+    """
+    docs = parse_all(branch, refresh=refresh, offline=offline)
+    by_type: dict[str, dict[str, dict]] = {}
+    for filename, doc in docs.items():
+        ptype = (doc.get("payload") or {}).get("payloadtype")
         if not ptype:
-            # Skip helper files like TopLevel / CommonPayloadKeys
-            if filename in ("TopLevel.yaml", "CommonPayloadKeys.yaml",
-                            "GlobalPreferences.yaml"):
-                index.append({
-                    "filename": filename,
-                    "payloadtype": filename.replace(".yaml", ""),
-                    "title": doc.get("title", ""),
-                    "description": doc.get("description", ""),
-                    "supportedOS": list((payload.get("supportedOS") or {}).keys()),
-                    "is_helper": True,
-                })
             continue
+        by_type.setdefault(ptype, {})[filename] = doc
+    return {ptype: merge_schema_variants(ptype, group)
+            for ptype, group in by_type.items()}
+
+
+def index_payloads(branch: str, refresh: bool = False,
+                   offline: bool = False) -> list[dict]:
+    """Erzeugt einen Index: payloadtype → Quelldateien + Metadaten.
+
+    Ein Eintrag pro PayloadType, nicht pro Datei. Alle Dateien unter
+    mdm/profiles/ tragen einen payloadtype, auch TopLevel und
+    CommonPayloadKeys, deshalb bleibt is_helper hier False.
+    """
+    index = []
+    for ptype, doc in load_schema_map(branch, refresh=refresh,
+                                      offline=offline).items():
+        payload = doc.get("payload", {}) or {}
+        sources = doc.get("_sources", [])
         index.append({
-            "filename": filename,
+            "filename": ", ".join(sources),
+            "sources": sources,
             "payloadtype": ptype,
             "title": doc.get("title", ""),
             "description": doc.get("description", ""),
@@ -201,8 +321,9 @@ def main():
         if args.json:
             print(json.dumps(idx, indent=2, ensure_ascii=False))
         else:
+            n_files = sum(len(item["sources"]) for item in idx)
             print(f"# Apple device-management — branch: {args.branch}")
-            print(f"# {len(idx)} schema files\n")
+            print(f"# {len(idx)} payload types from {n_files} schema files\n")
             for item in idx:
                 if item["is_helper"]:
                     continue

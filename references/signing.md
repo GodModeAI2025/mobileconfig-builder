@@ -114,7 +114,9 @@ codesigning und ohne `-v`, damit auch ein frisch importiertes, noch nicht
 vertrautes Zertifikat zählt. Kennt der Schlüsselbund den Namen nicht, bricht
 der Bau ab, bevor `security cms` überhaupt startet. Ein Tippfehler im Namen
 soll keinen Bau aufhängen. Ein SHA-1 wird hier auf den Namen aufgelöst, den
-`cms -N` erwartet.
+`cms -N` erwartet. Er ist damit eine Schreibweise für den Namen, keine
+Auswahl unter mehreren Zertifikaten desselben Namens: was dann passiert,
+steht im nächsten Abschnitt.
 
 ### Zwei Zertifikate mit demselben Namen
 
@@ -157,6 +159,27 @@ hatte vorher ein gültiges Profil dort liegen und danach eine leere Datei, die
 aussieht wie ein fertiges Profil. Über die Temporärdatei sieht der
 Ausgabepfad nur ein Ergebnis, das jede Prüfung bestanden hat, oder er bleibt
 unangetastet.
+
+Was der Umweg kostet, steht hier dazu, weil es zwei Fälle gibt, in denen er
+mehr braucht als `openssl -out`.
+
+Der eine ist das Verzeichnis: `os.replace` braucht Schreibrecht auf dem
+Verzeichnis, nicht nur auf der Zieldatei. Liegt die Ausgabe in einem
+Verzeichnis mit Modus 555, endet der Lauf mit Exit 2 und der Meldung, dass
+die Zwischendatei sich nicht anlegen ließ. Das Profil, das dort schon lag,
+bleibt unverändert liegen. Der alte Weg scheiterte in derselben Lage
+ebenfalls, nur mit einem `PermissionError` als Traceback: er legte
+`<name>.unsigned.mobileconfig` daneben und brauchte dafür dasselbe Recht.
+
+Der andere ist der lange Dateiname. Die Temporärdatei heißt nach ihrem Ziel,
+und `mkstemp` hängt acht Zufallszeichen und `.teil` an. Ungekürzt sprengte
+das NAME_MAX bei Ausgabenamen ab 242 Zeichen, wo der alte Weg mit seinen
+22 Zeichen für `.unsigned.mobileconfig` noch durchkam. Gemessen bei 244
+Zeichen: alter Weg Exit 0 und 2468 Bytes gültig signiert, ungekürzt
+`OSError: [Errno 63] File name too long`. Der Präfix wird deshalb auf
+`pathconf(PC_NAME_MAX)` abzüglich der 13 Zeichen von `mkstemp` gekürzt.
+Damit signieren beide Wege bei 244 Zeichen, und Namen bis 254 Zeichen, an
+denen der alte Weg scheiterte, gehen jetzt auch durch.
 
 Gearbeitet wird auf dem über `realpath` aufgelösten Pfad. Ist der
 Ausgabepfad ein symbolischer Link, schrieb `openssl -out` durch ihn hindurch

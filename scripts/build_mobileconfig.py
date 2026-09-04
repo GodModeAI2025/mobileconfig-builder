@@ -569,6 +569,41 @@ def _rechte_uebernehmen(teil: Path, ziel: Path) -> None:
         pass
 
 
+TEIL_SUFFIX = ".teil"
+
+# `mkstemp` schiebt zwischen Präfix und Suffix acht Zufallszeichen. Die
+# zählen mit, wenn der Dateiname gegen NAME_MAX geprüft wird.
+_MKSTEMP_ZUFALL = 8
+
+
+def _teil_praefix(ziel: Path) -> str:
+    """Der Namensanfang der Temporärdatei, gekürzt auf das, was hineinpasst.
+
+    Die Temporärdatei heißt nach ihrem Ziel, damit erkennbar bleibt, wozu sie
+    gehört, falls doch einmal eine liegenbleibt. Bei einem langen Ausgabenamen
+    sprengt das aber NAME_MAX, und dann scheitert schon `mkstemp`.
+
+    Das ist kein theoretischer Fall, sondern ein Fenster, in dem dieses
+    Werkzeug schlechter wäre als vorher. Der alte Weg legte
+    `<stamm>.unsigned.mobileconfig` neben die Ausgabe, brauchte also 22
+    Zeichen über den Stamm hinaus. Der ungekürzte Präfix braucht 27
+    (`.mobileconfig.` plus acht Zufallszeichen plus `.teil`). Gemessen bei
+    einem Ausgabenamen aus 244 Zeichen: alter Stand Exit 0 und 2468 Bytes
+    gültig signiert, ungekürzter Präfix `OSError: [Errno 63] File name too
+    long`. Mit der Kürzung signieren beide, und Namen bis an NAME_MAX heran
+    gehen auch durch.
+
+    Gekürzt wird von hinten, der Anfang des Namens sagt mehr. Eindeutig
+    bleibt die Datei über die Zufallszeichen, die `mkstemp` selbst vergibt.
+    """
+    try:
+        grenze = os.pathconf(str(ziel.parent), "PC_NAME_MAX")
+    except (OSError, ValueError, AttributeError):
+        grenze = 255
+    platz = grenze - _MKSTEMP_ZUFALL - len(TEIL_SUFFIX)
+    return (ziel.name + ".")[:max(1, platz)]
+
+
 def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
                werkzeug: str, nachspann: str = "",
                nachpruefung=None, haenger_hinweis: str = "") -> None:
@@ -610,11 +645,26 @@ def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
     Profil unter dem Linknamen und die verlinkte Datei war leer. Zeigt der
     Link ins Leere, entsteht dieselbe Zieldatei, die openssl angelegt hätte.
     In den Meldungen steht weiter der Pfad, den der Aufrufer angegeben hat.
+
+    Das Verzeichnis muss beschreibbar sein, nicht nur die Zieldatei: die
+    Temporärdatei entsteht dort, und `os.replace` braucht das Verzeichnis.
+    Wo das fehlt, kommt eine Meldung heraus und kein Traceback, und was am
+    Zielpfad liegt, bleibt liegen.
     """
     ziel = Path(os.path.realpath(signed_path))
-    ziel.parent.mkdir(parents=True, exist_ok=True)
-    fd, roh = tempfile.mkstemp(dir=str(ziel.parent),
-                               prefix=ziel.name + ".", suffix=".teil")
+    try:
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+        fd, roh = tempfile.mkstemp(dir=str(ziel.parent),
+                                   prefix=_teil_praefix(ziel),
+                                   suffix=TEIL_SUFFIX)
+    except OSError as fehler:
+        raise SchemaError(
+            f"Die Zwischendatei neben {signed_path} ließ sich nicht anlegen: "
+            f"{fehler.strerror}.\n"
+            f"Signiert wird in eine Datei neben dem Ziel, die erst danach an "
+            f"den Zielpfad geschoben wird. Dafür braucht das Verzeichnis "
+            f"{ziel.parent} Schreibrecht, nicht nur die Zieldatei selbst. "
+            f"Signiert wurde nicht.")
     os.close(fd)
     teil = Path(roh)
     try:
@@ -665,7 +715,14 @@ def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
         if nachpruefung is not None:
             nachpruefung(teil)
         _rechte_uebernehmen(teil, ziel)
-        os.replace(teil, ziel)
+        try:
+            os.replace(teil, ziel)
+        except OSError as fehler:
+            raise SchemaError(
+                f"Die fertige Signatur ließ sich nicht nach {signed_path} "
+                f"schieben: {fehler.strerror}.\n"
+                f"Signiert wurde, angekommen ist nichts. Was vorher unter "
+                f"dem Pfad lag, liegt unverändert dort.")
     finally:
         # Nach dem Verschieben gibt es die Temporärdatei nicht mehr, dann
         # fällt das hier durch. Sonst raus damit, auch bei Ctrl-C.

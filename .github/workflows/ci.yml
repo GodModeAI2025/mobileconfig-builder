@@ -137,6 +137,125 @@ jobs:
           test -f "$work/lax.mobileconfig"
           echo "OK: strikt Exit 2 ohne Datei, ohne --validate-strict Exit 0 mit Datei"
 
+      # Die Wege, auf denen die Signatur an den Ausgabepfad kommt. Bis Welle 5
+      # schrieb openssl direkt dorthin, jetzt liegt eine Temporaerdatei
+      # dazwischen. Beides sind Faelle, die die Eval-Suite nicht sieht: sie
+      # kennt kein Zertifikat, prueft also nur, was beim Scheitern passiert.
+      # Hier gibt es eins, und damit auch den Erfolgsfall.
+      - name: Signieren gegen den Ausgabepfad
+        run: |
+          work="$(mktemp -d)"
+          cd "$work"
+          openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
+            -days 2 -nodes -subj "/CN=CI-Signer" 2>/dev/null
+          cat > spec.json <<'JSON'
+          {
+            "meta": {
+              "PayloadIdentifier": "com.example.ci.signpfad",
+              "PayloadDisplayName": "Signierpfade"
+            },
+            "payloads": [
+              {"PayloadType": "com.apple.applicationaccess",
+               "allowCamera": false}
+            ]
+          }
+          JSON
+
+          build="$GITHUB_WORKSPACE/scripts/build_mobileconfig.py"
+          sign() {
+            python3 "$build" "$work/spec.json" -o "$1" --offline \
+              --sign-cert "$work/cert.pem" --sign-key "$work/key.pem"
+          }
+          gueltig() {
+            openssl smime -verify -inform der -in "$1" -noverify \
+              >/dev/null 2>&1
+          }
+
+          # 1. Normalfall. Ohne den sagen die anderen Faelle nichts.
+          mkdir -p "$work/a"
+          sign "$work/a/profil.mobileconfig"
+          gueltig "$work/a/profil.mobileconfig" \
+            || { echo "FEHLER: Normalfall liefert keine gueltige Signatur"; exit 1; }
+          echo "OK 1: Normalfall signiert"
+
+          # 2. Langer Ausgabename. Die Temporaerdatei heisst nach ihrem Ziel
+          # und braucht Platz fuer die Zufallszeichen von mkstemp. Ungekuerzt
+          # scheiterte hier, was vorher durchging.
+          mkdir -p "$work/b"
+          lang="$(python3 -c "print('l'*241 + '.mobileconfig')")"
+          sign "$work/b/$lang"
+          gueltig "$work/b/$lang" \
+            || { echo "FEHLER: 254 Zeichen langer Name signiert nicht"; exit 1; }
+          rest="$(ls "$work/b" | grep -c '\.teil$' || true)"
+          if [ "$rest" != "0" ]; then
+            echo "FEHLER: $rest Temporaerdatei(en) liegengeblieben"
+            ls -l "$work/b"
+            exit 1
+          fi
+          echo "OK 2: 254 Zeichen langer Name signiert, keine Reste"
+
+          # 3. Ausgabepfad ist ein symbolischer Link. openssl schrieb durch
+          # ihn hindurch; os.replace wuerde den Link durch eine Datei
+          # ersetzen und die verlinkte Datei leer zuruecklassen.
+          mkdir -p "$work/c"
+          : > "$work/c/echt.mobileconfig"
+          ln -s "$work/c/echt.mobileconfig" "$work/c/link.mobileconfig"
+          sign "$work/c/link.mobileconfig"
+          if [ ! -L "$work/c/link.mobileconfig" ]; then
+            echo "FEHLER: der Link wurde durch eine gewoehnliche Datei ersetzt"
+            ls -l "$work/c"
+            exit 1
+          fi
+          gueltig "$work/c/echt.mobileconfig" \
+            || { echo "FEHLER: die verlinkte Datei blieb leer"; ls -l "$work/c"; exit 1; }
+          echo "OK 3: Symlink bleibt stehen, die verlinkte Datei ist signiert"
+
+          # 4. Ausgabepfad ist ein Verzeichnis. Meldung mit Exit 2, kein
+          # Traceback aus os.replace.
+          mkdir -p "$work/d/profil.mobileconfig"
+          rc=0
+          python3 "$build" "$work/spec.json" -o "$work/d/profil.mobileconfig" \
+            --offline --sign-cert "$work/cert.pem" --sign-key "$work/key.pem" \
+            > "$work/d.out" 2> "$work/d.err" || rc=$?
+          cat "$work/d.err"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet, bekommen $rc"
+            exit 1
+          fi
+          if grep -q 'Traceback (most recent call last)' "$work/d.err"; then
+            echo "FEHLER: Absturz statt Meldung"
+            exit 1
+          fi
+          echo "OK 4: Verzeichnis als Ausgabepfad endet mit Meldung und Exit 2"
+
+          # 5. Zweiter Bau auf denselben Pfad, diesmal mit unbrauchbarem
+          # Schluessel. Das dort liegende gueltige Profil muss ueberleben.
+          mkdir -p "$work/e"
+          sign "$work/e/profil.mobileconfig"
+          vorher="$(sha256sum "$work/e/profil.mobileconfig" | cut -d' ' -f1)"
+          echo "kein schluessel" > "$work/e/kaputt.pem"
+          rc=0
+          python3 "$build" "$work/spec.json" -o "$work/e/profil.mobileconfig" \
+            --offline --sign-cert "$work/cert.pem" \
+            --sign-key "$work/e/kaputt.pem" \
+            > "$work/e.out" 2> "$work/e.err" || rc=$?
+          cat "$work/e.err"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet, bekommen $rc"
+            exit 1
+          fi
+          if grep -q 'Traceback (most recent call last)' "$work/e.err"; then
+            echo "FEHLER: Absturz statt Meldung"
+            exit 1
+          fi
+          nachher="$(sha256sum "$work/e/profil.mobileconfig" | cut -d' ' -f1)"
+          if [ "$vorher" != "$nachher" ]; then
+            echo "FEHLER: das vorhandene Profil hat den Fehlschlag nicht"
+            echo "ueberlebt ($vorher -> $nachher)"
+            exit 1
+          fi
+          echo "OK 5: gescheiterter zweiter Bau laesst das alte Profil ganz"
+
       - name: Schema-Inspektion des Wi-Fi-Payloads
         run: |
           out="$(python3 scripts/inspect_payload.py com.apple.wifi.managed \

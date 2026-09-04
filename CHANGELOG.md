@@ -157,6 +157,32 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   Gearbeitet wird jetzt auf dem ueber `realpath` aufgeloesten Pfad, damit
   herauskommt, was vorher herauskam. Ein Link ins Leere legt weiter die
   Zieldatei an.
+- **Ein langer Ausgabename ging nicht mehr durch.** Die Temporaerdatei heisst
+  nach ihrem Ziel, und `mkstemp` haengt acht Zufallszeichen und `.teil` an,
+  zusammen 27 Zeichen ueber den Namensstamm hinaus. Der alte Weg brauchte mit
+  `.unsigned.mobileconfig` nur 22. In dem Fenster dazwischen signierte
+  `origin/main` und dieser Zweig nicht mehr: gemessen bei einem Ausgabenamen
+  aus 244 Zeichen Exit 0 und 2468 Bytes gueltig gegen
+  `OSError: [Errno 63] File name too long`. Der Praefix wird jetzt auf
+  `pathconf(PC_NAME_MAX)` abzueglich der 13 Zeichen von `mkstemp` gekuerzt.
+  Damit signieren beide bei 244 Zeichen, und Namen bis 254 Zeichen, an denen
+  `origin/main` scheiterte, gehen jetzt ebenfalls durch.
+- **Fehler beim Anlegen und Verschieben der Temporaerdatei kamen als
+  Traceback heraus.** `mkstemp` und `os.replace` lagen ausserhalb der
+  `SchemaError`-Behandlung. Ein Ausgabeverzeichnis ohne Schreibrecht oder ein
+  Verzeichnis als Ausgabepfad endeten damit mit Exit 1 und einem Absturz.
+  Beide melden jetzt mit Exit 2 und sagen dazu, was am Zielpfad liegt: beim
+  Verzeichnis ohne Schreibrecht, dass `os.replace` das Verzeichnis braucht
+  und nicht nur die Zieldatei, und dass nicht signiert wurde. `origin/main`
+  stuerzte in beiden Faellen ebenfalls ab, es gab dort gar keine
+  `SchemaError`-Behandlung um das Signieren.
+- CI-Schritt, der mit einem selbst erzeugten Zertifikat gegen den
+  Ausgabepfad signiert: Normalfall, 254 Zeichen langer Name ohne
+  liegengebliebene `.teil`-Datei, Symlink bleibt stehen und die verlinkte
+  Datei ist signiert, Verzeichnis als Ausgabepfad endet mit Exit 2 ohne
+  Traceback, und ein gescheiterter zweiter Bau laesst das vorhandene Profil
+  Byte fuer Byte unveraendert. Gegen `origin/main` und gegen den Stand vor
+  dieser Reparatur ist der Schritt rot.
 
 ### Geaendert
 

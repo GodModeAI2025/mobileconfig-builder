@@ -9,7 +9,8 @@ Workflow:
         payloads:       Liste von Payload-Dicts, jeweils mit
                           PayloadType: com.apple.…
                           + payload-spezifische Keys
-  2. Validiert jede Payload gegen das Apple-Schema (required keys, types, ranges).
+  2. Validiert die Top-Level-Felder gegen TopLevel.yaml und jede Payload
+     gegen ihr Schema (required keys, types, ranges).
   3. Ergänzt fehlende Pflichtfelder (PayloadIdentifier, PayloadUUID, PayloadVersion)
      deterministisch.
   4. Schreibt eine binäre+lesbare XML-Plist mit Endung .mobileconfig.
@@ -196,6 +197,43 @@ def validate_payload(payload: dict, branch: str,
     return errors
 
 
+TOP_LEVEL_TYPE = "TopLevel"
+
+
+def get_top_level_keys(branch: str) -> list[dict]:
+    """Die Keys aus TopLevel.yaml, ohne deren `subkeys`.
+
+    Die subkeys fallen bewusst weg: PayloadContent beschreibt im Schema nur
+    einen Platzhalter namens PayloadContentItem, die einzelnen Payloads
+    prüfen wir ohnehin separat gegen ihr eigenes Schema. ConsentText benutzt
+    denselben Platzhalter-Trick für beliebige Sprachcodes und würde sonst
+    jeden echten Sprachcode als unbekannten Key melden.
+    """
+    schema = get_schema(TOP_LEVEL_TYPE, branch)
+    if not schema:
+        return []
+    return [{k: v for k, v in kdef.items() if k != "subkeys"}
+            for kdef in schema.get("payloadkeys", []) or []
+            if isinstance(kdef, dict)]
+
+
+def validate_top_level(profile: dict, branch: str,
+                       strict: bool = False) -> list[str]:
+    """Prüft die Profil-Ebene gegen TopLevel.yaml.
+
+    Ohne diese Prüfung passieren erfundene Keys wie 'TotallyMadeUpKey' die
+    strikte Validierung folgenlos, obwohl das Projekt zusagt, gegen Apples
+    Schema zu validieren.
+    """
+    keydefs = get_top_level_keys(branch)
+    if not keydefs:
+        return [f"top-level: kein Schema für {TOP_LEVEL_TYPE} im Cache "
+                f"(branch '{branch}')"]
+    errors: list[str] = []
+    _check_keys(profile, keydefs, "top-level", errors, strict)
+    return errors
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Build profile
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,6 +306,9 @@ def build_profile(spec: dict, branch: str = "release",
 
     profile = dict(meta)
     profile["PayloadContent"] = final_payloads
+    if validate:
+        all_errors = validate_top_level(profile, branch,
+                                        strict=strict) + all_errors
     return profile, all_errors
 
 

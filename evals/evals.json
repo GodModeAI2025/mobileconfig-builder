@@ -90,6 +90,20 @@
         "Each line shows OS support markers like [iOS,macOS,...] or similar",
         "Output is sorted alphabetically by PayloadType"
       ]
+    },
+    {
+      "id": 6,
+      "prompt": "In meiner Spec steht auf oberster Ebene ein Key, den Apple gar nicht kennt: 'TotallyMadeUpKey'. Bau das mit strikter Validierung \u2014 was passiert?",
+      "expected_output": "Strict-Mode-Build muss failen (Exit-Code 2) und den erfundenen Key als Top-Level-Problem benennen, nicht als Payload-Problem. Es darf keine .mobileconfig entstehen. Ohne --validate-strict laeuft derselbe Input weiter durch, das ist die dokumentierte Bedeutung des Flags. Specs, deren Top-Level-Keys alle aus TopLevel.yaml stammen, muessen unveraendert bauen.",
+      "files": ["assets/examples/wifi_guest.json"],
+      "expectations": [
+        "Strict build exits with code 2 for an invented top-level key",
+        "Error output names the invented key 'TotallyMadeUpKey'",
+        "Error output marks the finding as top-level, not as a payload finding",
+        "No .mobileconfig output file is created in strict mode",
+        "The same spec still builds without --validate-strict",
+        "A spec whose top-level keys all come from TopLevel.yaml still builds in strict mode"
+      ]
     }
   ]
 }

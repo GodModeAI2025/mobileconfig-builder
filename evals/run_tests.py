@@ -331,6 +331,50 @@ def test_eval_5_list_payload_types(workdir: Path) -> TestCase:
     return tc
 
 
+def test_eval_6_unknown_top_level_key(workdir: Path) -> TestCase:
+    tc = TestCase(6, "unknown-top-level-key-rejected")
+    spec = workdir / "bad_top.json"
+    spec.write_text(json.dumps({
+        "meta": {
+            "PayloadIdentifier": "com.example.badtop",
+            "PayloadDisplayName": "Erfundener Top-Level-Key",
+            "TotallyMadeUpKey": "nope",
+        },
+        "payloads": [{
+            "PayloadType": "com.apple.applicationaccess",
+            "allowCamera": False,
+        }],
+    }))
+    out = workdir / "bad_top.mobileconfig"
+    if out.exists():
+        out.unlink()
+    proc = run_build(spec, out, strict=True)
+    err = proc.stderr + proc.stdout
+
+    tc.check("Strict build exits with code 2 (validation failure)",
+             proc.returncode == 2,
+             f"returncode={proc.returncode}: {err[:200]}")
+    tc.check("Error names the invented key 'TotallyMadeUpKey'",
+             "TotallyMadeUpKey" in err, dim(err[:200]))
+    tc.check("Finding is reported on the top level, not on a payload",
+             "top-level: unknown key 'TotallyMadeUpKey'" in err,
+             dim(err[:200]))
+    tc.check("No output file was created in strict mode", not out.exists())
+
+    lax_out = workdir / "bad_top_lax.mobileconfig"
+    lax = run_build(spec, lax_out, strict=False)
+    tc.check("Same spec still builds without --validate-strict",
+             lax.returncode == 0 and lax_out.exists(),
+             f"returncode={lax.returncode}: {lax.stderr.strip()[:200]}")
+
+    good = ASSETS / "examples" / "wifi_guest.json"
+    good_out = workdir / "top_level_ok.mobileconfig"
+    ok = run_build(good, good_out, strict=True)
+    tc.check("Own example with only TopLevel.yaml keys still builds strictly",
+             ok.returncode == 0, ok.stderr.strip()[:200])
+    return tc
+
+
 # ─── Runner ────────────────────────────────────────────────────────────────
 TESTS = {
     1: test_eval_1_wifi_guest,
@@ -338,6 +382,7 @@ TESTS = {
     3: test_eval_3_classroom_ipad,
     4: test_eval_4_invalid_input_rejected,
     5: test_eval_5_list_payload_types,
+    6: test_eval_6_unknown_top_level_key,
 }
 
 

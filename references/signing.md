@@ -158,6 +158,14 @@ aussieht wie ein fertiges Profil. Über die Temporärdatei sieht der
 Ausgabepfad nur ein Ergebnis, das jede Prüfung bestanden hat, oder er bleibt
 unangetastet.
 
+Gearbeitet wird auf dem über `realpath` aufgelösten Pfad. Ist der
+Ausgabepfad ein symbolischer Link, schrieb `openssl -out` durch ihn hindurch
+in die verlinkte Datei und ließ den Link stehen. `os.replace` auf den
+Linknamen täte das nicht: es ersetzte den Link durch eine gewöhnliche Datei
+und ließe die verlinkte Datei bei 0 Bytes zurück, gemessen genau so. Mit
+`realpath` kommt heraus, was vorher herauskam. Zeigt der Link ins Leere,
+entsteht die Zieldatei, wie sie auch vorher entstanden wäre.
+
 **Und eine Grenze.** Der Signier-Aufruf hat ein Timeout von fünf Minuten.
 Die Vorabprüfung fängt den Tippfehler im Identitätsnamen ab, mehr nicht: ein
 gesperrter Schlüsselbund und ein Freigabe-Dialog ohne Fenstersitzung hängen

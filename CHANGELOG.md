@@ -146,6 +146,17 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   Wert hinter einem Passwort-Key. Jetzt gehen `true`, `false`, `yes` und `no`
   durch, Zahlen weiterhin nicht: eine Ziffernfolge kann sehr wohl ein
   Passwort sein.
+- **Ein symbolischer Link als Ausgabepfad wurde durch eine Datei ersetzt.**
+  Das war der Preis der Temporaerdatei, und er ist erst danach aufgefallen.
+  `openssl -out` schrieb durch den Link hindurch in die verlinkte Datei und
+  liess den Link stehen; `os.replace` auf den Linknamen ersetzte den Link
+  durch eine gewoehnliche Datei und liess die verlinkte Datei bei 0 Bytes
+  zurueck. Gemessen gegen `origin/main`: dort blieb der Link stehen und die
+  verlinkte Datei hatte 2468 Bytes gueltig signiert, mit der Temporaerdatei
+  lag das Profil unter dem Linknamen und die verlinkte Datei war leer.
+  Gearbeitet wird jetzt auf dem ueber `realpath` aufgeloesten Pfad, damit
+  herauskommt, was vorher herauskam. Ein Link ins Leere legt weiter die
+  Zieldatei an.
 
 ### Geaendert
 

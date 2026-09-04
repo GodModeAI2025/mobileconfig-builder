@@ -599,10 +599,22 @@ def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
     den Bau unbegrenzt und ohne Meldung, und das ist der Fall, den die
     Fehlerdiagnose in references/signing.md als selbst erlebt beschreibt.
     `haenger_hinweis` sagt, was für dieses Werkzeug dahinterstecken kann.
+
+    Gearbeitet wird auf dem über `realpath` aufgelösten Pfad. Ist der
+    Ausgabepfad ein symbolischer Link, schrieb `openssl -out` durch ihn
+    hindurch in die verlinkte Datei und ließ den Link stehen. `os.replace`
+    auf den Linknamen täte etwas anderes: es ersetzte den Link durch eine
+    gewöhnliche Datei und ließe die verlinkte Datei unangetastet. Gemessen
+    gegen den Stand vor dieser Welle: dort blieb der Link stehen und die
+    verlinkte Datei hatte 2468 Bytes gültig signiert, ohne `realpath` lag das
+    Profil unter dem Linknamen und die verlinkte Datei war leer. Zeigt der
+    Link ins Leere, entsteht dieselbe Zieldatei, die openssl angelegt hätte.
+    In den Meldungen steht weiter der Pfad, den der Aufrufer angegeben hat.
     """
-    signed_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, roh = tempfile.mkstemp(dir=str(signed_path.parent),
-                               prefix=signed_path.name + ".", suffix=".teil")
+    ziel = Path(os.path.realpath(signed_path))
+    ziel.parent.mkdir(parents=True, exist_ok=True)
+    fd, roh = tempfile.mkstemp(dir=str(ziel.parent),
+                               prefix=ziel.name + ".", suffix=".teil")
     os.close(fd)
     teil = Path(roh)
     try:
@@ -652,8 +664,8 @@ def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
                 f"{erstes_byte!r}). Das ist keine PKCS#7-Signatur.")
         if nachpruefung is not None:
             nachpruefung(teil)
-        _rechte_uebernehmen(teil, signed_path)
-        os.replace(teil, signed_path)
+        _rechte_uebernehmen(teil, ziel)
+        os.replace(teil, ziel)
     finally:
         # Nach dem Verschieben gibt es die Temporärdatei nicht mehr, dann
         # fällt das hier durch. Sonst raus damit, auch bei Ctrl-C.

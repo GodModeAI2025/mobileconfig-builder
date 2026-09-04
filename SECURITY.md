@@ -56,6 +56,16 @@ keeps what it had or gets a verified signature, and there is no longer a conditi
 may be deleted. Eval 7 asserts all of it, including that no file in the output directory contains
 the example password and that an existing profile survives a failed run byte for byte.
 
+The temporary file cost two cases of its own, and both are fixed rather than described away. A
+symbolic link as the output path used to be written through, leaving the link in place; `os.replace`
+on the link name replaced the link with a regular file and left the linked file at 0 bytes. Work
+now happens on the `realpath`-resolved path, so the linked file gets the profile again, as it did
+before. And the temporary file needs write permission on the *directory*, not just on the output
+file: in a directory with mode 555 the run ends with exit 2 and a message, and whatever was at the
+output path stays untouched. A CI step signs against all of it with a self-signed certificate:
+normal case, a 254 character output name, symlink, directory as output path, and the failed second
+build. That step is red against the state this repository had before these fixes.
+
 **Attack path 3: a poisoned schema cache.** `fetch_schema.py:76-77` returns a file from
 `~/.cache/mobileconfig-builder/<branch>/` whenever it exists and `--refresh` is not set. No TTL, no
 checksum, no ETag. Whoever can write that directory decides what `--validate-strict` accepts.

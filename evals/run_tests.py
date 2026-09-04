@@ -441,12 +441,14 @@ def test_eval_7_signing_error_paths(workdir: Path) -> TestCase:
 
     Was welcher Check deckt, damit niemand mehr daraus liest als drinsteht:
 
-    Die Checks 1 bis 4 pruefen die Vorabpruefung, nicht das Aufraeumen.
-    resolve_identity lehnt die erfundene Identitaet ab, bevor irgendeine Datei
-    angelegt wird. "Keine Ausgabedatei nach dem Fehlschlag" ist dort deshalb
-    trivial wahr und waere auch ohne jedes Aufraeumen gruen. Der Wert dieser
-    Checks liegt woanders: der Bau bricht mit Meldung ab, statt in `security
-    cms` haengenzubleiben.
+    Die Checks 1 bis 4 pruefen eine Vorabpruefung, nicht das Aufraeumen. Auf
+    macOS lehnt resolve_identity die erfundene Identitaet ab, auf jeder
+    anderen Plattform greift schon die Plattformpruefung in
+    sign_profile_keychain. Beide brechen ab, bevor irgendeine Datei angelegt
+    wird. "Keine Ausgabedatei nach dem Fehlschlag" ist dort deshalb trivial
+    wahr und waere auch ohne jedes Aufraeumen gruen. Der Wert dieser Checks
+    liegt woanders: der Bau bricht mit Meldung ab, statt in `security cms`
+    haengenzubleiben.
 
     Die Checks 6 bis 8 pruefen den Ausgabepfad wirklich. Sie gehen ueber
     `openssl`, das erst startet und dann scheitert, also genau die Lage

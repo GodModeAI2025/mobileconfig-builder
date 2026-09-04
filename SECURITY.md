@@ -42,10 +42,19 @@ exited non-zero, so `tmp.unlink()` was never reached. Reproduced with a nonexist
 `leak.unsigned.mobileconfig` stayed on disk, mode 0644, containing
 `<key>Password</key><string>supersecret123</string>`, next to a zero byte `leak.mobileconfig` that
 reads like a finished profile, and the exception surfaced as a traceback. The unsigned plist now
-goes to the signing tool over stdin and is never written to disk. On failure the output file is
-removed again unless it existed before the run, the message is a message and not a traceback, and
-the exit code is 2. Eval 7 asserts all of it, including that no file in the output directory
-contains the example password.
+goes to the signing tool over stdin and is never written to disk. The message is a message and not
+a traceback, and the exit code is 2.
+
+The first fix for the leftover file was half of one, and this is where it was half: the output file
+was removed on failure *unless it existed before the run*. Which is the common case. A second build
+onto the same path, after any change to the spec, hits an existing file, and both signing tools
+truncate their output file when they open it. Measured with `wifi_guest.json`: 1378 bytes of valid
+profile before the failed run, 0 bytes after, and the cleanup branch skipped the file because it
+had existed. Signing now writes to a temporary file in the target directory and only moves it onto
+the output path, with `os.replace`, once every check has passed. The output path therefore either
+keeps what it had or gets a verified signature, and there is no longer a condition on when a file
+may be deleted. Eval 7 asserts all of it, including that no file in the output directory contains
+the example password and that an existing profile survives a failed run byte for byte.
 
 **Attack path 3: a poisoned schema cache.** `fetch_schema.py:76-77` returns a file from
 `~/.cache/mobileconfig-builder/<branch>/` whenever it exists and `--refresh` is not set. No TTL, no
@@ -139,7 +148,12 @@ All open in `main` today.
   unchecked. `openssl` signs with whatever you point it at, and `security cms` signs with whatever
   identity you name. What the tool does check is that the result is a PKCS#7 structure that unpacks
   back to exactly the profile it built, because `security cms -S` reports success on stderr-only
-  failures.
+  failures. It also checks that the name it hands to `security cms -N` belongs to exactly one
+  certificate in the keychain it was pointed at, and refuses otherwise. That check is about
+  identifying the signer, not about judging it: `-N` selects by name alone and takes no
+  fingerprint, so with two certificates of the same name the tool could not say afterwards which
+  one signed. Whether `security cms` restricts itself to the keychain given with `--keychain` is
+  not measured here and not claimed.
 - **No policy review.** Schema valid means keys and types match Apple's YAML. It says nothing about
   whether a device accepts the profile or whether the policy behind it makes sense.
 - **Unsigned profiles are for lab use.** Do not deploy them to production or through an MDM.

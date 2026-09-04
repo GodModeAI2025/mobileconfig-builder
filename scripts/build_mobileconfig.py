@@ -542,18 +542,29 @@ def resolve_identity(wunsch: str, keychain: Path | None = None) -> str:
     return wunsch
 
 
-def _wie_das_werkzeug_es_angelegt_haette(pfad: Path) -> None:
-    """Setzt die Rechte, die openssl oder security selbst vergeben hätten.
+def _rechte_uebernehmen(teil: Path, ziel: Path) -> None:
+    """Gibt der Temporärdatei die Rechte, die der Zielpfad hätte.
 
-    `mkstemp` legt mit 0600 an. Das wäre für ein Profil mit Klartext-Passwort
-    die bessere Wahl, ist aber nicht die Frage, die hier behandelt wird, und
-    ein stiller Rechtewechsel gehört nicht in eine Reparatur, die von
-    verlorenen Dateien handelt. Also dieselben Rechte wie vorher.
+    Zwei Fälle, und beide sollen aussehen wie vorher. Gab es die Zieldatei
+    schon, behält sie ihre Rechte: das alte Werkzeug schrieb in die
+    bestehende Datei, ein `chmod 600` des Benutzers überlebte das, und
+    `os.replace` würde es sonst still auf 0644 zurückdrehen. Gab es sie
+    nicht, kommen die Rechte heraus, die openssl oder security vergeben
+    hätten, also 0666 gegen die umask.
+
+    `mkstemp` legt mit 0600 an, was für ein Profil mit Klartext-Passwort die
+    bessere Vorgabe wäre. Das ist aber eine eigene Entscheidung und gehört
+    nicht als Nebenwirkung in eine Reparatur, die von verlorenen Dateien
+    handelt.
     """
-    maske = os.umask(0)
-    os.umask(maske)
     try:
-        os.chmod(pfad, 0o666 & ~maske)
+        modus = ziel.stat().st_mode & 0o7777
+    except OSError:
+        maske = os.umask(0)
+        os.umask(maske)
+        modus = 0o666 & ~maske
+    try:
+        os.chmod(teil, modus)
     except OSError:
         pass
 
@@ -641,7 +652,7 @@ def _signieren(cmd_bauen, profil: bytes, signed_path: Path,
                 f"{erstes_byte!r}). Das ist keine PKCS#7-Signatur.")
         if nachpruefung is not None:
             nachpruefung(teil)
-        _wie_das_werkzeug_es_angelegt_haette(teil)
+        _rechte_uebernehmen(teil, signed_path)
         os.replace(teil, signed_path)
     finally:
         # Nach dem Verschieben gibt es die Temporärdatei nicht mehr, dann

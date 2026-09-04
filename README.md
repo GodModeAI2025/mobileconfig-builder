@@ -19,6 +19,38 @@ This tool:
 3. **Builds** a correctly structured XML plist `.mobileconfig` file
 4. **Signs** (optional) with PKCS#7 using your X.509 certificate for production deployment
 
+## Getting the Tool
+
+Two ways, no package manager involved.
+
+**Clone the repository.** You get everything: the scripts, the skill, the
+examples, plus the landing page, the CI workflows and `tools/scan_secrets.py`.
+
+```bash
+git clone https://github.com/GodModeAI2025/mobileconfig-builder.git
+cd mobileconfig-builder
+python3 scripts/fetch_schema.py
+```
+
+**Download the release archive.** It holds what you need to run the tool or
+install the skill and nothing else: `SKILL.md`, `references/`, `scripts/`,
+`assets/`, `evals/`, plus `LICENSE`, `NOTICE` and `VERSION`. The landing page
+and the workflow files stay out, and so does `scripts/package_release.py`,
+which builds the archive and has no job inside it.
+
+```bash
+curl -LO https://github.com/GodModeAI2025/mobileconfig-builder/releases/latest/download/mobileconfig-builder.zip
+unzip mobileconfig-builder.zip -d ~/.claude/skills/
+```
+
+The archive unpacks into a single `mobileconfig-builder/` directory, so the
+command above lands the skill at `~/.claude/skills/mobileconfig-builder/`,
+where Claude looks for it. For command line use, unzip wherever you like and
+run the scripts from that directory.
+
+That URL always points at the newest published release, so it answers with
+404 as long as this repository has no release. In that case, clone.
+
 ## Quick Start
 
 ```bash
@@ -71,6 +103,7 @@ Create a JSON file with your profile configuration:
 | `scripts/fetch_schema.py` | Fetches and caches YAML schemas from Apple's GitHub repo. Supports `--offline`, `--from-clone`, `--list`, `--refresh`. |
 | `scripts/inspect_payload.py` | Displays keys, required fields, types, and allowed values for any PayloadType. Supports OS filtering. |
 | `scripts/build_mobileconfig.py` | Builds and validates the profile. Outputs unsigned or PKCS#7-signed `.mobileconfig`. |
+| `scripts/package_release.py` | Builds the release archive from the files git tracks. Takes the output path as its argument, needs no network, and produces the same bytes on every run. |
 | `tools/scan_secrets.py` | Repository check, not part of the build workflow. Looks for committed profiles, key files, PEM blocks, and password values that are not documented placeholders. Runs in CI. |
 
 ## Features
@@ -157,7 +190,7 @@ python3 evals/run_tests.py --eval-id 4   # Run a single test
 
 The suite calls every script with `--offline`, so a populated schema cache is a prerequisite. Run `python3 scripts/fetch_schema.py` once, or fill the cache from a local clone with `--from-clone`.
 
-CI runs the same suite on every push and pull request against `main`, plus three checks outside the test runner: the invented top-level key sent straight through the CLI, a schema inspection of the Wi-Fi payload, and `tools/scan_secrets.py`. Eval 6 already covers the top-level rejection inside the suite; the CI step asserts the same contract at the shell level, where the exit code and the missing output file are what a caller actually sees. The Wi-Fi inspection is the only coverage `inspect_payload.py` gets, since no eval calls it. The Apple schema is pinned to a fixed commit, so a change upstream cannot turn the build red by itself. Bumping that commit is a deliberate edit in `.github/workflows/ci.yml`.
+CI runs the same suite on every push and pull request against `main`, plus five checks outside the test runner: `VERSION` against the `CHANGELOG.md` section and against the download name this README documents, the invented top-level key sent straight through the CLI, a schema inspection of the Wi-Fi payload, `tools/scan_secrets.py`, and a build of the release archive. That last one asserts the files the archive has to contain, the repository internals it must not contain, and identical bytes on two consecutive runs, so a broken package shows up before someone sets a tag rather than after. Eval 6 already covers the top-level rejection inside the suite; the CI step asserts the same contract at the shell level, where the exit code and the missing output file are what a caller actually sees. The Wi-Fi inspection is the only coverage `inspect_payload.py` gets, since no eval calls it. The Apple schema is pinned to a fixed commit, so a change upstream cannot turn the build red by itself. Bumping that commit is a deliberate edit in `.github/workflows/ci.yml`.
 
 ## Common PayloadTypes
 
@@ -180,10 +213,10 @@ CI runs the same suite on every push and pull request against `main`, plus three
 - **The schema cache never expires.** A cached file is served until you run `fetch_schema.py --refresh`. A payload type Apple adds shows up on the next online fetch because the file is missing locally, but keys Apple changes inside an existing file stay stale until a refresh.
 - **No validator for existing profiles.** The tool checks what it builds. Handing it a `.mobileconfig` from somewhere else is not supported.
 - **Signing needs OpenSSL.** `openssl smime` has to be in `PATH`. There is no fallback to `security cms` on macOS.
-- **PyYAML is installed at runtime.** On first use the scripts run `pip install pyyaml` when the module is missing. On a locked-down machine, install it yourself first.
+- **PyYAML is installed at runtime.** On first use the scripts run `pip install pyyaml` when the module is missing, and retry with `--break-system-packages` for a Python whose packages the system manages. If both attempts fail, the script names the pip command to run by hand and exits 2. On a locked-down machine, install it yourself first.
 - **Encrypted payloads are out of scope.** Apple allows a payload to be encrypted for one specific device. This tool writes plain text payloads only, which is why the secrets section below matters.
 - **DDM is not covered.** See the note below.
-- **CI covers one Python version.** The workflow runs on Python 3.12 against a pinned schema commit. Python 3.9, which the requirements section claims as the floor, and the current Apple schema are checked by hand.
+- **CI covers one Python version.** The workflow runs on Python 3.12 with a current pip, against a pinned schema commit. The floor the requirements section names is checked by hand: for this release the eval suite, the CLI checks and the PyYAML auto-install were run on the Python 3.9 and pip 21.2.4 that ship with macOS. The current Apple schema is checked by hand too.
 
 ## Roadmap
 
@@ -198,6 +231,32 @@ Candidates, in no particular order, and none of them promised:
 ## Note on Declarative Device Management (DDM)
 
 Apple's newer DDM declarations use a different format (JSON, not `.mobileconfig`) and are pushed directly by the MDM server. This tool focuses on traditional Configuration Profiles. DDM support may be added in the future.
+
+## Releases and Versioning
+
+The version lives in `VERSION` at the repository root, one line, semantic
+versioning. Nothing else keeps a copy of it: `CHANGELOG.md` gets the matching
+section, the archive carries the file itself, and CI fails if the two drift
+apart.
+
+Releasing is three steps, and the last one is deliberate handwork:
+
+1. Set `VERSION`, add the section to `CHANGELOG.md`, merge to `main`.
+2. `git tag v$(cat VERSION)` and push the tag.
+3. `.github/workflows/release.yml` checks the tag against `VERSION`, runs
+   `scripts/package_release.py`, and creates the release as a **draft** with
+   `mobileconfig-builder.zip` attached. Read it, write the release text,
+   publish.
+
+To see what a release will contain before tagging:
+
+```bash
+python3 scripts/package_release.py dist/mobileconfig-builder.zip
+unzip -Z1 dist/mobileconfig-builder.zip
+```
+
+The 0.x number is deliberate. The known gaps are listed under Limitations,
+and the command line interface may still change between minor versions.
 
 ## License
 

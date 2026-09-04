@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test:
-    name: Evals, Top-Level-Validierung, Secret-Scan
+    name: Evals, Top-Level-Validierung, Secret-Scan, Release-Artefakt
     runs-on: ubuntu-latest
     env:
       # Gepinnter Stand von apple/device-management, Branch release.
@@ -26,6 +26,37 @@ jobs:
     steps:
       - name: Repo auschecken
         uses: actions/checkout@v4
+
+      - name: Version, Changelog und dokumentierter Download-Name
+        run: |
+          version="$(cat VERSION)"
+          echo "VERSION sagt $version"
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "FEHLER: VERSION enthaelt '$version', erwartet ist 1.2.3"
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "FEHLER: CHANGELOG.md hat keinen Abschnitt '## [$version]'."
+            echo "Die Version wird nur in VERSION gepflegt, der Eintrag"
+            echo "dazu gehoert in CHANGELOG.md."
+            exit 1
+          fi
+          if ! grep -q \
+              'releases/latest/download/mobileconfig-builder\.zip' README.md; then
+            echo "FEHLER: README nennt den Download-Pfad nicht mehr so, wie"
+            echo "das Release die Datei benennt."
+            exit 1
+          fi
+          if ! grep -q \
+              'package_release\.py dist/mobileconfig-builder\.zip' \
+              .github/workflows/release.yml; then
+            echo "FEHLER: release.yml haengt eine anders benannte Datei an"
+            echo "das Release, als README und Landingpage verlinken."
+            exit 1
+          fi
+          echo "OK: VERSION, CHANGELOG und der dokumentierte Download-Name" \
+            "passen zusammen"
 
       - name: Python einrichten
         uses: actions/setup-python@v5
@@ -115,3 +146,63 @@ jobs:
 
       - name: Secret-Scan
         run: python3 tools/scan_secrets.py
+
+      - name: Release-Artefakt bauen und pruefen
+        run: |
+          zip="$RUNNER_TEMP/artefakt/mobileconfig-builder.zip"
+          python3 scripts/package_release.py "$zip"
+
+          if [ ! -s "$zip" ]; then
+            echo "FEHLER: $zip fehlt oder ist leer"
+            exit 1
+          fi
+
+          namen="$(unzip -Z1 "$zip")"
+          echo "$namen"
+
+          for pfad in \
+            mobileconfig-builder/SKILL.md \
+            mobileconfig-builder/VERSION \
+            mobileconfig-builder/LICENSE \
+            mobileconfig-builder/NOTICE \
+            mobileconfig-builder/scripts/build_mobileconfig.py \
+            mobileconfig-builder/scripts/fetch_schema.py \
+            mobileconfig-builder/scripts/inspect_payload.py \
+            mobileconfig-builder/evals/run_tests.py \
+            mobileconfig-builder/evals/evals.json \
+            mobileconfig-builder/references/signing.md \
+            mobileconfig-builder/assets/examples/wifi_guest.json
+          do
+            if ! grep -qxF "$pfad" <<<"$namen"; then
+              echo "FEHLER: $pfad fehlt im Archiv"
+              exit 1
+            fi
+          done
+
+          # Repo-Innereien, Landingpage, erzeugte Profile, Schluesselmaterial.
+          verboten='(^|/)\.git(/|$)|(^|/)\.github(/|$)|(^|/)__pycache__(/|$)'
+          verboten="$verboten"'|(^|/)index\.html$|(^|/)course\.html$'
+          verboten="$verboten"'|\.mobileconfig$|\.(pem|key|p12|pfx|cer|crt|pyc)$'
+          if grep -Eq "$verboten" <<<"$namen"; then
+            echo "FEHLER: das Archiv enthaelt Dateien, die nicht ausgeliefert"
+            echo "werden duerfen:"
+            grep -E "$verboten" <<<"$namen"
+            exit 1
+          fi
+
+          if [ "$(unzip -p "$zip" mobileconfig-builder/VERSION)" \
+               != "$(cat VERSION)" ]; then
+            echo "FEHLER: die VERSION im Archiv weicht von der im Repo ab"
+            exit 1
+          fi
+
+          # Zweiter Lauf, gleiches Ergebnis. Ohne das taugt die Datei nicht
+          # als Beleg dafuer, was in einem Release steckt.
+          zip2="$RUNNER_TEMP/artefakt2/mobileconfig-builder.zip"
+          python3 scripts/package_release.py "$zip2" --quiet
+          if ! cmp -s "$zip" "$zip2"; then
+            echo "FEHLER: zwei Laeufe ergeben verschiedene Archive"
+            exit 1
+          fi
+
+          echo "OK: Artefakt vollstaendig, ohne Repo-Innereien, reproduzierbar"

@@ -15,3 +15,6 @@
 # Python
 __pycache__/
 *.py[cod]
+
+# Gebaute Release-Artefakte
+/dist/

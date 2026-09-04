@@ -189,7 +189,7 @@ Datei dem User geben (`present_files`) und kurz erklären:
 - **MDM-Distribution:** Profil in Jamf, Kandji, Mosyle, Intune, Profile Manager etc. importieren
 - **Bei MDM-Push:** muss meist signiert sein, je nach MDM-Server
 
-**Geheimnisse:** Die erzeugte Datei enthält jedes Passwort und jedes Shared Secret im Klartext, das Plist ist unverschlüsselt. Genauso die Spec-Datei, aus der sie gebaut wurde. Beide gehören nicht in ein Git-Repo, nicht in einen Chat-Verlauf und nicht in einen geteilten Ordner. Sag dem User beim Ausliefern, wo die Datei liegt und dass er sie nach dem Import ins MDM löschen oder dorthin legen soll, wo seine übrigen Zugangsdaten liegen. Wenn eine Spec versehentlich im Repo landet: `python3 tools/scan_secrets.py` findet sie.
+**Geheimnisse:** Die erzeugte Datei enthält jedes Passwort und jedes Shared Secret im Klartext, das Plist ist unverschlüsselt. Genauso die Spec-Datei, aus der sie gebaut wurde. Beide gehören nicht in ein Git-Repo, nicht in einen Chat-Verlauf und nicht in einen geteilten Ordner. Sag dem User beim Ausliefern, wo die Datei liegt und dass er sie nach dem Import ins MDM löschen oder dorthin legen soll, wo seine übrigen Zugangsdaten liegen. Wenn eine Spec versehentlich in einem Git-Repo landet: der Secret-Scan `tools/scan_secrets.py` findet sie, er liegt aber nur im Clone von mobileconfig-builder und nicht in diesem installierten Skill.
 
 ## Spezialfälle
 
@@ -222,7 +222,6 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 | `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter und Required-Only. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
 | `evals/run_tests.py` | Regressions-Test-Suite mit 6 realistischen Test-Cases (siehe unten). |
-| `tools/scan_secrets.py` | Prüft die verfolgten Dateien auf eingecheckte Profile, Schlüsseldateien, PEM-Blöcke und Passwortwerte. Läuft auch in der CI. |
 
 ## Beispiele
 

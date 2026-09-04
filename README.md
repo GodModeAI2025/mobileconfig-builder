@@ -82,7 +82,14 @@ Create a JSON file with your profile configuration:
 - **Offline mode**: Works fully offline once schemas are cached
 - **Optional signing**: PKCS#7 signing with OpenSSL for production MDM deployment
 
-## Signing (Optional)
+## Signing
+
+**Rule: unsigned is for the lab.** An unsigned profile is fine while you are
+iterating on a spec on your own test devices. Anything that leaves that bench,
+for a colleague's Mac, a fleet, or an MDM server, gets signed. Without a
+signature the device shows "Not Verified" at install time, nobody can tell who
+built the file, and whoever gets hold of it before installation can edit it.
+Plenty of MDM servers refuse unsigned profiles outright.
 
 ```bash
 python3 scripts/build_mobileconfig.py spec.json \
@@ -92,7 +99,11 @@ python3 scripts/build_mobileconfig.py spec.json \
   --sign-ca ca-chain.pem
 ```
 
-Unsigned profiles show as "Not Verified" on Apple devices. For production/MDM use, sign with a trusted certificate.
+The flag is optional, the practice is not. Signing also does not remove the
+install prompt: the device still asks the user to confirm, and it only shows
+the profile as verified when it already trusts the signing CA. A self-signed
+certificate without established trust looks the same as no signature at all.
+`references/signing.md` covers how to pick a certificate.
 
 ## Handling Secrets
 

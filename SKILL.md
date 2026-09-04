@@ -157,9 +157,13 @@ Strikt geprüft wird nicht nur jede Payload gegen ihr eigenes Schema, sondern au
 
 Bei Validierungsfehlern korrigiere die Spec mit dem User. Nicht-strikt (`ohne --validate-strict`) lässt unbekannte Keys durch — manchmal nötig, wenn Apple einen Key dokumentiert, der noch nicht im Schema ist; aber das ist die Ausnahme.
 
-### Schritt 7 — Optional: Signieren
+### Schritt 7 — Signieren
 
-Apple-Geräte zeigen unsignierte Profile als „nicht signiert / nicht verifiziert" an. Für produktiven Einsatz mit X.509-Zertifikat signieren:
+**Regel: unsigniert nur im Labor.** Ein unsigniertes Profil ist zum Ausprobieren auf eigenen Testgeräten da, sonst nirgends. Alles, was auf ein fremdes Gerät, in eine Flotte oder auf einen MDM-Server geht, wird signiert. Ohne Signatur zeigt das Gerät beim Installieren „nicht verifiziert", niemand kann prüfen, wer das Profil gebaut hat, und wer die Datei vor der Installation in die Hände bekommt, kann sie ändern. Viele MDM-Server nehmen unsignierte Profile ohnehin nicht an.
+
+Wenn der User kein Zertifikat hat und trotzdem ausrollen will: nicht stillschweigend unsigniert liefern, sondern die Regel nennen und auf `references/signing.md` verweisen. Signieren ersetzt den Installationsdialog nicht; das Gerät fragt weiter nach und zeigt das Profil nur dann als verifiziert, wenn es der signierenden CA vertraut.
+
+Mit X.509-Zertifikat signieren:
 
 ```bash
 python3 scripts/build_mobileconfig.py spec.json \
@@ -184,6 +188,8 @@ Datei dem User geben (`present_files`) und kurz erklären:
 - **iOS / iPadOS:** Per AirDrop/Mail/Safari öffnen → Einstellungen → „Profil geladen" → Installieren
 - **MDM-Distribution:** Profil in Jamf, Kandji, Mosyle, Intune, Profile Manager etc. importieren
 - **Bei MDM-Push:** muss meist signiert sein, je nach MDM-Server
+
+**Geheimnisse:** Die erzeugte Datei enthält jedes Passwort und jedes Shared Secret im Klartext, das Plist ist unverschlüsselt. Genauso die Spec-Datei, aus der sie gebaut wurde. Beide gehören nicht in ein Git-Repo, nicht in einen Chat-Verlauf und nicht in einen geteilten Ordner. Sag dem User beim Ausliefern, wo die Datei liegt und dass er sie nach dem Import ins MDM löschen oder dorthin legen soll, wo seine übrigen Zugangsdaten liegen. Wenn eine Spec versehentlich im Repo landet: `python3 tools/scan_secrets.py` findet sie.
 
 ## Spezialfälle
 
@@ -214,6 +220,7 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 | `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter und Required-Only. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
 | `evals/run_tests.py` | Regressions-Test-Suite mit 6 realistischen Test-Cases (siehe unten). |
+| `tools/scan_secrets.py` | Prüft die verfolgten Dateien auf eingecheckte Profile, Schlüsseldateien, PEM-Blöcke und Passwortwerte. Läuft auch in der CI. |
 
 ## Beispiele
 

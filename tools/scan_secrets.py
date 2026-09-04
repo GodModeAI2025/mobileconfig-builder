@@ -18,7 +18,8 @@ Drei Regeln:
    Zertifikat, in beliebiger Textdatei, etwa als "Beispiel" in einer
    Doku-Datei.
 3. Passwortfelder. Jeder Wert hinter einem Key wie Password, SharedSecret
-   oder Passphrase muss ein dokumentierter Platzhalter sein.
+   oder Passphrase muss ein dokumentierter Platzhalter oder ein Wahrheitswert
+   sein.
 
 Zu Regel 3 und zum Umgang mit den eigenen Beispielen: die Specs unter
 assets/examples/ brauchen ein Passwort, sonst zeigen sie den Aufbau nicht,
@@ -97,6 +98,14 @@ PLACEHOLDER_VALUES = {
     "schoolpass2026",   # assets/examples/classroom_ipad.json, evals.json
 }
 
+# Ein Boolean ist kein Geheimnis. Der Anlass ist konkret: Chrome hat den
+# Policy-Key `PasswordManagerEnabled`, und ein Beispiel dafuer setzt ihn auf
+# false. Ohne diese Regel muesste entweder `false` in die Allowlist, was jedes
+# echte Passwort namens "false" durchliesse, oder das Beispiel duerfte den Key
+# nicht nennen, der in der Sache der richtige ist. Nur Wahrheitswerte, keine
+# Zahlen: eine Ziffernfolge kann sehr wohl ein Passwort sein.
+BOOLEAN_WERTE = {"true", "false", "yes", "no"}
+
 # Regel 3 gilt fuer Dateien, in denen Specs, Profile oder Doku stehen.
 SCANNED_SUFFIXES = {
     ".json", ".yaml", ".yml", ".md", ".html", ".htm", ".txt",
@@ -164,8 +173,10 @@ def scan_file(root: Path, name: str) -> list[str]:
             m = YAML_RE.match(line)
             matches = [m] if m else []
         for m in matches:
-            value = m.group("value").strip().strip("\"'")
+            value = m.group("value").strip().strip(",").strip().strip("\"'")
             if value in PLACEHOLDER_VALUES:
+                continue
+            if value.lower() in BOOLEAN_WERTE:
                 continue
             findings.append(
                 f"{name}:{lineno}: Wert hinter '{m.group('key')}' ist kein "

@@ -95,6 +95,13 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   des bisherigen Dreizeilers, SKILL.md sagt beim Abgrenzen jetzt auch, was
   der Unterschied praktisch bedeutet.
 
+- **Der Secret-Scan haelt einen Wahrheitswert nicht mehr fuer ein Passwort.**
+  Chrome hat den Policy-Key `PasswordManagerEnabled`, und ein Beispiel dafuer
+  setzt ihn auf `false`. Bisher meldete der Scan das als undokumentierten
+  Wert hinter einem Passwort-Key. Jetzt gehen `true`, `false`, `yes` und `no`
+  durch, Zahlen weiterhin nicht: eine Ziffernfolge kann sehr wohl ein
+  Passwort sein.
+
 ### Geaendert
 
 - Die Doku nennt fuer die Identitaetssuche `security find-identity -p smime`

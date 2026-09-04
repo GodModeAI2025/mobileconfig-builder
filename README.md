@@ -186,7 +186,9 @@ What that means in practice:
 - The example specs under `assets/examples/` use invented passwords
   (`supersecret123`, `schoolpass2026`). They are listed as placeholders in
   `tools/scan_secrets.py`; any other value behind a key like `Password`,
-  `SharedSecret`, or `Passphrase` makes the scan and the CI job fail.
+  `SharedSecret`, or `Passphrase` makes the scan and the CI job fail. The one
+  exception is a boolean: `PasswordManagerEnabled: false` is a Chrome policy,
+  not a credential, and `true`/`false`/`yes`/`no` pass.
 
 Run the check yourself with `python3 tools/scan_secrets.py`. It reads only
 what `git ls-files` reports, needs no network, and prints file and line for

@@ -556,7 +556,7 @@
     <section class="table-section">
         <div class="section-header">
             <h2>Supported Payload Types</h2>
-            <p>Every payload type in Apple's schema validates and builds. The exact count changes with each Apple update, so ask <code>fetch_schema.py --list</code> for it. Payloads with a <code>&lt;data&gt;</code> key, certificates above all, need their spec written as YAML with the <code>!!binary</code> tag: JSON has no bytes type, and a base64 string in a JSON spec fails validation with exit code 2. Here are the most common ones.</p>
+            <p>Every payload type in Apple's schema validates and builds. The exact count changes with each Apple update, so ask <code>fetch_schema.py --list</code> for it. Payloads with a <code>&lt;data&gt;</code> key, certificates above all, need their spec written as YAML with the <code>!!binary</code> tag: JSON has no bytes type, and a base64 string in a JSON spec fails validation; with <code>--validate-strict</code> the build then exits with code 2 and writes nothing, without that flag it writes the value as a <code>&lt;string&gt;</code> where the schema expects <code>&lt;data&gt;</code>. Here are the most common ones.</p>
         </div>
         <div class="table-wrapper">
             <table class="payload-table">

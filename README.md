@@ -77,7 +77,7 @@ Create a JSON file with your profile configuration:
 
 - **Schema-validated**: Every key checked against Apple's official YAML definitions, top-level fields against `TopLevel.yaml` and each payload against its own schema
 - **Deterministic UUIDs**: Same input always produces the same UUIDs (safe for re-deployment)
-- **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile. A certificate payload carries a `<data>` key, so write that spec as YAML and pass the value with the `!!binary` tag; JSON has no bytes type and the build rejects it
+- **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile. A certificate payload carries a `<data>` key, so write that spec as YAML and pass the value with the `!!binary` tag; JSON has no bytes type, so a base64 string in a JSON spec is rejected with `--validate-strict` and, without that flag, written into the profile as a `<string>` where the schema expects `<data>`
 - **OS-aware inspection**: Filter keys by target platform (macOS, iOS, tvOS, etc.)
 - **Offline mode**: Works fully offline once schemas are cached
 - **Optional signing**: PKCS#7 signing with OpenSSL for production MDM deployment

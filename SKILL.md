@@ -204,6 +204,12 @@ trägt die EKU `emailProtection` oder gar keine einschränkende EKU und taucht
 unter der Code-Signing-Policy nicht auf. Wer dort nachsieht, hält ein
 vorhandenes Zertifikat für nicht vorhanden.
 
+Stehen in der Liste zwei Zertifikate mit demselben Namen, lehnt das Werkzeug
+ab, und der SHA-1 hilft dort nicht weiter. `security cms -N` wählt allein
+über den Namen und nimmt keinen Fingerabdruck entgegen, also ließe sich
+hinterher nicht sagen, welches unterschrieben hat. Schlag dann den PEM-Weg
+vor oder das Aufräumen des Schlüsselbunds, nicht den Fingerabdruck.
+
 **Weg 2, Schlüssel liegt als PEM-Datei vor.**
 
 ```bash

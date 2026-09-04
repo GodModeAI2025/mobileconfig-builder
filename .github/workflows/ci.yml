@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Evals, Top-Level-Validierung, Secret-Scan
+    runs-on: ubuntu-latest
+    env:
+      # Gepinnter Stand von apple/device-management, Branch release.
+      # Bewusst fest verdrahtet: Apple aendert das Schema laufend, und eine
+      # CI, die deshalb ohne eigenes Zutun rot wird, sagt nichts ueber
+      # diesen Code aus. Zum Anheben die neue SHA aus
+      #   git ls-remote https://github.com/apple/device-management release
+      # eintragen und die Evals lokal gegenpruefen.
+      SCHEMA_SHA: 67045e2fa06f528b196c01edee6a8bf88b844beb
+
+    steps:
+      - name: Repo auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: PyYAML installieren
+        run: python3 -m pip install --disable-pip-version-check pyyaml==6.0.2
+
+      - name: Schema-Cache aus gepinntem Apple-Stand fuellen
+        run: |
+          SCHEMA_DIR="$RUNNER_TEMP/device-management"
+          mkdir -p "$SCHEMA_DIR"
+          git -C "$SCHEMA_DIR" init -q
+          git -C "$SCHEMA_DIR" remote add origin \
+            https://github.com/apple/device-management.git
+          git -C "$SCHEMA_DIR" fetch -q --depth 1 origin "$SCHEMA_SHA"
+          git -C "$SCHEMA_DIR" checkout -q FETCH_HEAD
+          python3 scripts/fetch_schema.py --from-clone "$SCHEMA_DIR"
+          test -f "$HOME/.cache/mobileconfig-builder/release/TopLevel.yaml"
+
+      - name: Eval-Suite
+        run: python3 evals/run_tests.py
+
+      - name: Erfundener Top-Level-Key bricht strikt ab
+        run: |
+          work="$(mktemp -d)"
+          spec="$work/bad_top.json"
+          out="$work/bad_top.mobileconfig"
+          cat > "$spec" <<'JSON'
+          {
+            "meta": {
+              "PayloadIdentifier": "com.example.ci.badtop",
+              "PayloadDisplayName": "Erfundener Top-Level-Key",
+              "TotallyMadeUpKey": "nope"
+            },
+            "payloads": [
+              {
+                "PayloadType": "com.apple.applicationaccess",
+                "allowCamera": false
+              }
+            ]
+          }
+          JSON
+
+          rc=0
+          python3 scripts/build_mobileconfig.py "$spec" -o "$out" \
+            --offline --validate-strict > "$work/out.txt" 2> "$work/err.txt" \
+            || rc=$?
+          cat "$work/err.txt"
+
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit-Code 2 erwartet, bekommen $rc"
+            exit 1
+          fi
+          if [ -e "$out" ]; then
+            echo "FEHLER: trotz Validierungsfehler wurde $out geschrieben"
+            exit 1
+          fi
+          if ! grep -q "top-level: unknown key 'TotallyMadeUpKey'" \
+              "$work/err.txt"; then
+            echo "FEHLER: der Fund wird nicht als Top-Level-Problem gemeldet"
+            exit 1
+          fi
+          if grep -q 'Traceback (most recent call last)' "$work/err.txt"; then
+            echo "FEHLER: Absturz statt Validierungsreport"
+            exit 1
+          fi
+
+          python3 scripts/build_mobileconfig.py "$spec" \
+            -o "$work/lax.mobileconfig" --offline
+          test -f "$work/lax.mobileconfig"
+          echo "OK: strikt Exit 2 ohne Datei, ohne --validate-strict Exit 0 mit Datei"
+
+      - name: Schema-Inspektion des Wi-Fi-Payloads
+        run: |
+          out="$(python3 scripts/inspect_payload.py com.apple.wifi.managed \
+            --os macOS --offline)"
+          head -12 <<<"$out"
+          for key in SSID_STR EncryptionType AutoJoin Password ProxyType; do
+            if ! grep -q "$key" <<<"$out"; then
+              echo "FEHLER: $key fehlt in der Schema-Ausgabe"
+              exit 1
+            fi
+          done
+          echo "OK: inspect_payload liefert die erwarteten Wi-Fi-Keys"
+
+      - name: Secret-Scan
+        run: python3 tools/scan_secrets.py

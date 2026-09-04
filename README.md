@@ -1,5 +1,7 @@
 # mobileconfig-builder
 
+[![CI](https://github.com/GodModeAI2025/mobileconfig-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/GodModeAI2025/mobileconfig-builder/actions/workflows/ci.yml)
+
 Generate production-ready `.mobileconfig` files (Apple Configuration Profiles) for macOS, iOS, iPadOS, tvOS, watchOS, and visionOS — validated against Apple's official device-management schema.
 
 ## What it does

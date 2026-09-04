@@ -36,7 +36,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from fetch_schema import ensure_yaml, load_schema_map  # noqa: E402
+from fetch_schema import (  # noqa: E402
+    MANIFESTS_REF,
+    ensure_yaml,
+    load_manifest_schema,
+    load_schema_map,
+)
 
 ALLOWED_TYPES = {
     "<string>": (str,),
@@ -76,8 +81,20 @@ def load_all_schemas(branch: str, refresh: bool = False,
     return _SCHEMA_CACHE
 
 
-def get_schema(payloadtype: str, branch: str) -> dict | None:
-    return load_all_schemas(branch).get(payloadtype)
+def get_schema(payloadtype: str, branch: str,
+               manifeste: dict | None = None) -> dict | None:
+    """Schema zu einem PayloadType, Apple zuerst.
+
+    `manifeste` ist entweder None (nur Apple) oder ein Dict mit den Optionen
+    fuer ProfileManifests. Apple gewinnt immer: die zweite Quelle wird nur
+    gefragt, wenn Apple den PayloadType ueberhaupt nicht kennt. Zusammengefuehrt
+    wird nichts. Ein PayloadType, den beide beschreiben, wird ausschliesslich
+    gegen Apple geprueft, damit nie unklar ist, welche Regel gegolten hat.
+    """
+    schema = load_all_schemas(branch).get(payloadtype)
+    if schema is not None or manifeste is None:
+        return schema
+    return load_manifest_schema(payloadtype, **manifeste)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -179,17 +196,26 @@ def get_common_keys(branch: str) -> list[dict]:
 
 
 def validate_payload(payload: dict, branch: str,
-                     strict: bool = False) -> list[str]:
+                     strict: bool = False,
+                     manifeste: dict | None = None) -> list[str]:
     """Returns list of error strings; empty means valid."""
     errors: list[str] = []
     ptype = payload.get("PayloadType")
     if not ptype:
         return ["payload: missing PayloadType"]
-    schema = get_schema(ptype, branch)
+    schema = get_schema(ptype, branch, manifeste=manifeste)
     if schema is None:
+        hinweis = ""
+        if manifeste is None and not ptype.startswith("com.apple."):
+            hinweis = (". Apples Schema beschreibt nur Apple-Domains, "
+                       "fuer Drittanbieter --manifests versuchen")
+        elif manifeste is not None and manifeste.get("offline"):
+            hinweis = (". Mit --offline wird nur der Manifest-Cache gelesen, "
+                       "und dort liegt diese Domain nicht. Einmal ohne "
+                       "--offline laufen lassen")
         return [
             f"payload: unknown PayloadType '{ptype}' "
-            f"(no schema in branch '{branch}')"
+            f"(no schema in branch '{branch}'){hinweis}"
         ]
     # Combine payload-specific keys with the CommonPayloadKeys
     # so PayloadType/UUID/Identifier/etc. are not flagged as "unknown".
@@ -253,7 +279,8 @@ def deterministic_uuid(seed: str) -> str:
 def build_profile(spec: dict, branch: str = "release",
                   strict: bool = False,
                   validate: bool = True,
-                  offline: bool = False) -> tuple[dict, list[str]]:
+                  offline: bool = False,
+                  manifeste: dict | None = None) -> tuple[dict, list[str]]:
     # Pre-load schemas once with the offline flag if needed
     if validate:
         load_all_schemas(branch, offline=offline)
@@ -301,7 +328,8 @@ def build_profile(spec: dict, branch: str = "release",
         )
         p.setdefault("PayloadDisplayName", ptype)
         if validate:
-            errs = validate_payload(p, branch, strict=strict)
+            errs = validate_payload(p, branch, strict=strict,
+                                    manifeste=manifeste)
             for e in errs:
                 all_errors.append(f"payloads[{i}] {e}")
         final_payloads.append(p)
@@ -334,30 +362,46 @@ SECURITY_TOOL = "/usr/bin/security"
 # brauchbaren Policies ab und vereinigt das Ergebnis.
 IDENTITY_POLICIES = ("smime", "basic")
 
-# Zeilenformat von `security find-identity -v`:
+# Zeilenformat von `security find-identity`:
 #   "  1) 9AC1…CE2C \"Profil-Signer\""
-_IDENTITY_ZEILE = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.*)"\s*$')
+# Ohne -v haengt hinter dem Namen noch der Grund, warum die Identitaet nicht
+# als gueltig zaehlt, etwa "(CSSMERR_TP_NOT_TRUSTED)". Deshalb kein Anker am
+# Zeilenende.
+_IDENTITY_ZEILE = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.*?)"')
 
 _SHA1_HEX = re.compile(r"^[0-9A-Fa-f]{40}$")
 
+# Auf einem Mac mit Endpoint-Security-Agent kann ein einzelner
+# security-Aufruf unter Last Minuten brauchen. Das darf einen Bau nicht
+# aufhängen, die Liste ist nur Beiwerk fuer die Fehlermeldung.
+IDENTITY_TIMEOUT = 30
 
-def list_identities(keychain: Path | None = None) -> list[tuple[str, str]]:
-    """Signier-Identitäten aus dem Schlüsselbund als [(SHA-1, Name)].
+# Fuer die Frage "gibt es das Zertifikat ueberhaupt" zaehlt jede Policy und
+# auch eine Identitaet, der noch niemand vertraut. Ein frisch importiertes
+# Signaturzertifikat meldet `(CSSMERR_TP_NOT_TRUSTED)` und laesst sich
+# trotzdem zum Signieren benutzen: Signieren braucht den Schluessel, nicht
+# das Vertrauen.
+IDENTITY_POLICIES_ALLE = ("smime", "basic", "codesigning")
 
-    Dient der Fehlermeldung, nicht der Auswahl: was `--sign-identity` bekommt,
-    geht unverändert an `security cms`. Diese Liste sagt nur, was zur Auswahl
-    stünde, wenn der Name nicht passt.
-    """
-    gefunden: list[tuple[str, str]] = []
-    gesehen: set[str] = set()
-    for policy in IDENTITY_POLICIES:
-        cmd = [SECURITY_TOOL, "find-identity", "-v", "-p", policy]
+_IDENTITY_CACHE: dict[tuple[str, bool], list] = {}
+
+
+def _find_identity(keychain: Path | None, policies: tuple,
+                   nur_gueltige: bool) -> list:
+    gefunden: list = []
+    gesehen: set = set()
+    for policy in policies:
+        cmd = [SECURITY_TOOL, "find-identity"]
+        if nur_gueltige:
+            cmd.append("-v")
+        cmd += ["-p", policy]
         if keychain:
             cmd.append(str(keychain))
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-        except OSError:
-            return gefunden
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=IDENTITY_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired):
+            break
         for zeile in proc.stdout.splitlines():
             treffer = _IDENTITY_ZEILE.match(zeile)
             if not treffer:
@@ -367,6 +411,28 @@ def list_identities(keychain: Path | None = None) -> list[tuple[str, str]]:
                 continue
             gesehen.add(sha1)
             gefunden.append((sha1, treffer.group(2)))
+    return gefunden
+
+
+def list_identities(keychain: Path | None = None,
+                    nur_gueltige: bool = True) -> list[tuple[str, str]]:
+    """Signier-Identitäten aus dem Schlüsselbund als [(SHA-1, Name)].
+
+    Mit `nur_gueltige` (Vorgabe) die Liste, die einem Menschen etwas sagt:
+    was unter den Policies smime und basic gerade als gültig durchgeht. Ohne
+    das die vollständige Liste über alle drei Policies, inklusive der
+    Zertifikate, denen noch niemand vertraut. Die zweite Form beantwortet die
+    Frage, ob `security cms` überhaupt etwas finden kann.
+
+    Das Ergebnis wird gemerkt. Ein Lauf fragt sonst dasselbe mehrfach, einmal
+    beim Auflösen der Angabe und einmal beim Berichten des Fehlschlags.
+    """
+    schluessel = (str(keychain or ""), nur_gueltige)
+    if schluessel in _IDENTITY_CACHE:
+        return _IDENTITY_CACHE[schluessel]
+    policies = IDENTITY_POLICIES if nur_gueltige else IDENTITY_POLICIES_ALLE
+    gefunden = _find_identity(keychain, policies, nur_gueltige)
+    _IDENTITY_CACHE[schluessel] = gefunden
     return gefunden
 
 
@@ -386,25 +452,41 @@ def _identitaeten_text(identitaeten: list[tuple[str, str]]) -> str:
 def resolve_identity(wunsch: str, keychain: Path | None = None) -> str:
     """Übersetzt die Angabe aus --sign-identity in den Namen für `cms -N`.
 
+    Drei Dinge passieren hier, und alle drei aus einem konkreten Grund.
+
     `security cms` nimmt einen Zertifikatsnamen, keinen Fingerabdruck. Wer
-    einen SHA-1 angibt, bekommt ihn hier aufgelöst. Ein Name, der auf mehrere
-    Zertifikate passt, wird abgelehnt statt geraten: `security cms` griffe
-    sonst eines davon, ohne zu sagen welches.
+    einen SHA-1 angibt, bekommt ihn hier aufgelöst.
+
+    Ein Name, der auf mehrere Zertifikate passt, wird abgelehnt statt geraten:
+    `security cms` griffe sonst eines davon, ohne zu sagen welches.
+
+    Und ein Name, den der Schlüsselbund gar nicht kennt, wird abgelehnt, bevor
+    `security cms` überhaupt startet. Mit einer unbekannten Identität meldet
+    das Werkzeug zwar sofort `failed to encode data`, bleibt danach aber unter
+    Last minutenlang stehen, statt sich zu beenden. Ein Tippfehler im
+    Identitätsnamen darf keinen Bau aufhängen.
     """
-    identitaeten = list_identities(keychain=keychain)
+    alle = list_identities(keychain=keychain, nur_gueltige=False)
+    gueltige = list_identities(keychain=keychain)
     if _SHA1_HEX.match(wunsch):
-        for sha1, name in identitaeten:
+        for sha1, name in alle:
             if sha1 == wunsch.upper():
                 return name
         raise SchemaError(
             f"Kein Zertifikat mit dem SHA-1 {wunsch} im Schlüsselbund.\n"
-            + _identitaeten_text(identitaeten))
-    passend = {sha1 for sha1, name in identitaeten if name == wunsch}
+            + _identitaeten_text(gueltige))
+    passend = {sha1 for sha1, name in alle if name == wunsch}
     if len(passend) > 1:
         raise SchemaError(
             f"'{wunsch}' passt auf {len(passend)} Zertifikate. Bitte den "
             f"SHA-1 angeben statt des Namens.\n"
-            + _identitaeten_text(identitaeten))
+            + _identitaeten_text(gueltige))
+    if not passend:
+        raise SchemaError(
+            f"Der Schlüsselbund kennt keine Identität namens '{wunsch}'. "
+            f"security cms würde hier ohne brauchbare Meldung stehenbleiben, "
+            f"deshalb bricht der Bau vorher ab.\n"
+            + _identitaeten_text(gueltige))
     return wunsch
 
 
@@ -576,6 +658,14 @@ def main():
                          "Regex-Format-Checks aktiv)")
     ap.add_argument("--no-validate", action="store_true",
                     help="Schema-Validierung überspringen (NICHT empfohlen)")
+    ap.add_argument("--manifests", action="store_true",
+                    help="Zweite Schema-Quelle ProfileManifests zulassen, "
+                         "fuer PayloadTypes, die Apple nicht kennt "
+                         "(Chrome, Office, Zoom …). Wird zur Laufzeit "
+                         "geladen, nichts davon liegt im Repo.")
+    ap.add_argument("--manifests-ref", default=MANIFESTS_REF,
+                    help=f"Branch, Tag oder Commit von ProfileManifests "
+                         f"(default: {MANIFESTS_REF})")
     ap.add_argument("--sign-cert", type=Path,
                     help="X.509-Zertifikat (PEM) zum Signieren")
     ap.add_argument("--sign-key", type=Path,
@@ -605,13 +695,35 @@ def main():
     if args.keychain and not args.sign_identity:
         sys.exit("FEHLER: --keychain wirkt nur zusammen mit --sign-identity.")
 
+    manifeste = None
+    if args.manifests:
+        manifeste = {"ref": args.manifests_ref, "offline": args.offline}
+
     spec = load_spec(args.spec)
     profile, errors = build_profile(
         spec, branch=args.branch,
         strict=args.validate_strict,
         validate=not args.no_validate,
         offline=args.offline,
+        manifeste=manifeste,
     )
+
+    # Wer gegen die zweite Quelle geprueft hat, soll das sehen. Die Angabe
+    # steht auf stderr, damit sie eine Pipe auf stdout nicht verschmutzt.
+    if manifeste is not None and not args.no_validate:
+        aus_manifest = sorted({
+            p["PayloadType"] for p in profile.get("PayloadContent", [])
+            if isinstance(p, dict) and p.get("PayloadType")
+            and load_all_schemas(args.branch).get(p["PayloadType"]) is None
+            and get_schema(p["PayloadType"], args.branch,
+                           manifeste=manifeste) is not None
+        })
+        if aus_manifest:
+            print("Hinweis: geprueft gegen ProfileManifests statt gegen "
+                  "Apples Schema: " + ", ".join(aus_manifest),
+                  file=sys.stderr)
+            print("  Die Sammlung ist von Mac-Admins gepflegt, nicht von "
+                  "Apple, und hat keine Lizenzangabe.", file=sys.stderr)
 
     if errors:
         print("Validation issues:", file=sys.stderr)

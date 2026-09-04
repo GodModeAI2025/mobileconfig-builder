@@ -120,6 +120,23 @@
         "A failed PEM signing leaves no file containing the cleartext password",
         "A failed PEM signing leaves no file at all in the output directory"
       ]
+    },
+    {
+      "id": 8,
+      "prompt": "Ich will ein Chrome-Profil bauen. Apples Schema kennt com.google.Chrome nicht, ProfileManifests schon. Uebersetzt das Werkzeug so ein Manifest richtig in Apples Schema-Form?",
+      "expected_output": "Der Normalisierer bildet pfm_domain auf den payloadtype ab, pfm_platforms auf supportedOS, pfm_type auf Apples valuetypes, pfm_require=always auf presence=required, pfm_range_list auf rangelist, pfm_range_min/max auf range, pfm_format auf format und verschachtelte pfm_subkeys auf subkeys. Bedienelemente von ProfileCreator (PFC_-Praefix, pfm_segments) und die CommonPayloadKeys fallen raus. Eine Spec gegen ein solches Manifest baut strikt durch, ein erfundener Key und ein Wert ausserhalb der Liste werden abgelehnt, und die Herkunft steht in der Meldung.",
+      "files": [],
+      "expectations": [
+        "pfm_domain becomes the payloadtype and pfm_platforms becomes supportedOS",
+        "pfm_type maps to Apple valuetypes and an unknown type becomes <any>",
+        "Only pfm_require=always becomes presence=required",
+        "pfm_range_list, pfm_range_min/max and pfm_format are carried over",
+        "Nested pfm_subkeys and the item shape of an array survive the translation",
+        "ProfileCreator control keys and the CommonPayloadKeys are dropped",
+        "A spec built against the manifest passes --validate-strict",
+        "An invented key and a value outside the range list are rejected with exit code 2",
+        "The output names ProfileManifests as the source of the schema"
+      ]
     }
   ]
 }

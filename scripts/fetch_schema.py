@@ -3,6 +3,9 @@
 fetch_schema.py — Lädt Apple device-management Profil-Schemas und cached sie lokal.
 
 Quelle: https://github.com/apple/device-management (Branch release).
+Zweite, optionale Quelle fuer Drittanbieter-Domains:
+https://github.com/ProfileManifests/ProfileManifests. Die wird nur auf Wunsch
+geladen und liegt in einem eigenen Cache-Ordner, siehe unten.
 Neben release veröffentlicht Apple einen Seed-Branch für die kommende
 OS-Generation, derzeit seed_OS_27_0. Default bleibt release; der Seed-Stand
 kommt über --branch seed_OS_27_0 und landet in einem eigenen Cache-Ordner.
@@ -292,6 +295,230 @@ def load_schema_map(branch: str, refresh: bool = False,
         by_type.setdefault(ptype, {})[filename] = doc
     return {ptype: merge_schema_variants(ptype, group)
             for ptype, group in by_type.items()}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Zweite Schema-Quelle: ProfileManifests
+# ─────────────────────────────────────────────────────────────────────────────
+# Apples YAML deckt Apple-Domains ab. Fuer Chrome, Office, Zoom und den Rest
+# der Drittanbieter gibt es dort nichts, und `--validate-strict` weist solche
+# Payloads als unbekannten PayloadType zurueck. Die Luecke fuellt
+# ProfileManifests, die Sammlung, aus der auch ProfileCreator und iMazing
+# Profile Editor ihre Payload-Beschreibungen ziehen.
+#
+# Lizenz: das Repo hat keine. Weder eine LICENSE-Datei noch ein Lizenzfeld
+# ueber die GitHub-API (`license: null`, geprueft am 2026-09-04). Ohne
+# Lizenz gibt es keine Erlaubnis zur Weiterverbreitung, deshalb liegt hier
+# kein einziges Manifest im Repo und keines im Release-Artefakt. Geladen wird
+# zur Laufzeit, auf ausdruecklichen Wunsch (`--manifests`), in einen eigenen
+# Cache-Ordner neben dem Apple-Cache.
+MANIFESTS_REPO = "ProfileManifests/ProfileManifests"
+MANIFESTS_RAW = f"https://raw.githubusercontent.com/{MANIFESTS_REPO}"
+MANIFESTS_REF = "master"
+
+# Reihenfolge ist Absicht: Apple-Domains zuerst, dann Systemeinstellungen,
+# dann Anwendungen, dann der Developer-Bereich.
+MANIFESTS_DIRS = (
+    "Manifests/ManifestsApple",
+    "Manifests/ManagedPreferencesApple",
+    "Manifests/ManagedPreferencesApplications",
+    "Manifests/ManagedPreferencesDeveloper",
+)
+
+# pfm_type → Apples valuetype. Was hier nicht steht, wird zu <any>: lieber
+# ungeprueft durchlassen als einen gueltigen Wert falsch ablehnen.
+PFM_TYPES = {
+    "string": "<string>",
+    "integer": "<integer>",
+    "real": "<real>",
+    "float": "<real>",
+    "boolean": "<boolean>",
+    "data": "<data>",
+    "date": "<date>",
+    "array": "<array>",
+    "dictionary": "<dictionary>",
+    "url": "<string>",
+    "alias": "<data>",
+}
+
+
+def manifest_cache_dir(ref: str = MANIFESTS_REF) -> Path:
+    return CACHE_DIR / "profilemanifests" / ref
+
+
+def fetch_manifest(domain: str, ref: str = MANIFESTS_REF,
+                   refresh: bool = False,
+                   offline: bool = False) -> bytes | None:
+    """Laedt das Manifest einer Domain und legt es in den Cache.
+
+    Gibt None zurueck, wenn ProfileManifests die Domain nicht kennt. Gesucht
+    wird ueber raw.githubusercontent statt ueber die Contents-API: der
+    Dateiname ist die Domain, also reicht ein Versuch je Verzeichnis, und ein
+    Verzeichnis-Listing kostet nur Rate-Limit.
+    """
+    cp = manifest_cache_dir(ref) / f"{domain}.plist"
+    if cp.exists() and not refresh:
+        return cp.read_bytes()
+    if offline:
+        return None
+    for verzeichnis in MANIFESTS_DIRS:
+        url = f"{MANIFESTS_RAW}/{ref}/{verzeichnis}/{domain}.plist"
+        try:
+            body = http_get(url)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue
+            raise
+        except (urllib.error.URLError, OSError) as e:
+            # Kein Netz ist ein normaler Zustand, kein Programmfehler. Ohne
+            # diesen Zweig faellt der Aufruf als Traceback aus dem Build.
+            raise SystemExit(
+                f"ProfileManifests ist nicht erreichbar ({e}), und "
+                f"{domain} liegt nicht im Cache unter {cp.parent}. "
+                f"Entweder Netz herstellen oder eine Domain nehmen, die "
+                f"schon im Cache liegt."
+            )
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        cp.write_bytes(body)
+        return body
+    return None
+
+
+# Die sieben Keys, die jedes Payload traegt. Sie stehen in Apples
+# CommonPayloadKeys.yaml und werden dort geprueft. Aus dem Manifest kommen sie
+# raus, sonst haengt an einem Chrome-Payload eine zweite, abweichende
+# Definition derselben Keys.
+PFM_COMMON_KEYS = frozenset({
+    "PayloadIdentifier", "PayloadUUID", "PayloadType", "PayloadVersion",
+    "PayloadDescription", "PayloadDisplayName", "PayloadOrganization",
+})
+
+
+def _pfm_ueberspringen(sk: dict) -> bool:
+    """Subkeys, die keine Einstellung beschreiben.
+
+    ProfileManifests traegt Bedienelemente von ProfileCreator im selben Baum:
+    `PFC_SegmentedControl_0` ist ein Reiter-Umschalter, kein Preference-Key,
+    steht aber als `pfm_require: always` drin. Wer das eins zu eins
+    uebersetzt, verlangt von jedem Chrome-Payload einen Key, den Chrome nie
+    gesehen hat. Erkennbar sind diese Eintraege am Praefix PFC_ und am Feld
+    pfm_segments.
+    """
+    if not isinstance(sk, dict):
+        return True
+    if "pfm_segments" in sk:
+        return True
+    name = sk.get("pfm_name")
+    if isinstance(name, str):
+        if name.startswith("PFC_"):
+            return True
+        if name in PFM_COMMON_KEYS:
+            return True
+    return False
+
+
+# ProfileManifests beschreibt ein Dictionary mit beliebigen Schluesseln
+# ueber ein Paar Platzhalter, `{{key}}` und `{{value}}`. Chrome nutzt das fuer
+# `ExtensionSettings`, wo der Schluessel die Erweiterungs-ID ist. Eins zu eins
+# uebersetzt haette das Schema zwei Keys namens `{{key}}` und `{{value}}`, und
+# `--validate-strict` haette jede echte Erweiterungs-ID als unbekannten Key
+# abgelehnt. Apples Schema hat fuer denselben Fall die Konvention `key: ANY`,
+# die der Validator schon kennt.
+def _ist_platzhalter(sk: dict) -> bool:
+    name = sk.get("pfm_name")
+    return (isinstance(name, str) and name.startswith("{{")
+            and name.endswith("}}"))
+
+
+def _pfm_keydef(sk: dict) -> dict:
+    """Uebersetzt einen pfm_subkey in Apples Key-Definition."""
+    kdef: dict = {
+        "key": sk.get("pfm_name") or "<item>",
+        "type": PFM_TYPES.get(sk.get("pfm_type"), "<any>"),
+    }
+    if sk.get("pfm_title"):
+        kdef["title"] = sk["pfm_title"]
+    if sk.get("pfm_description"):
+        kdef["content"] = sk["pfm_description"]
+    # pfm_require kennt always, push und optional; nur always ist Pflicht.
+    if sk.get("pfm_require") == "always" or sk.get("pfm_required") is True:
+        kdef["presence"] = "required"
+    else:
+        kdef["presence"] = "optional"
+    if isinstance(sk.get("pfm_range_list"), list) and sk["pfm_range_list"]:
+        kdef["rangelist"] = list(sk["pfm_range_list"])
+    bereich = {}
+    if "pfm_range_min" in sk:
+        bereich["min"] = sk["pfm_range_min"]
+    if "pfm_range_max" in sk:
+        bereich["max"] = sk["pfm_range_max"]
+    if bereich:
+        kdef["range"] = bereich
+    if sk.get("pfm_format"):
+        kdef["format"] = sk["pfm_format"]
+    if "pfm_default" in sk:
+        kdef["default"] = sk["pfm_default"]
+    unter = [u for u in (sk.get("pfm_subkeys") or [])
+             if not _pfm_ueberspringen(u)]
+    if unter:
+        if any(_ist_platzhalter(u) for u in unter):
+            kdef["subkeys"] = [{"key": "ANY", "type": "<any>",
+                                "presence": "optional",
+                                "title": "beliebige Schlüssel"}]
+        else:
+            kdef["subkeys"] = [_pfm_keydef(u) for u in unter]
+    return kdef
+
+
+def manifest_to_schema(doc: dict, ref: str = MANIFESTS_REF,
+                       quelle: str = "") -> dict:
+    """Formt ein ProfileManifest in die Gestalt eines Apple-Schemas um.
+
+    Uebersetzt wird nur, was der Validator auch auswertet: Name, Typ,
+    Pflichtangabe, Wertelisten, Bereiche, Regex und verschachtelte Subkeys.
+    Bewusst nicht uebersetzt werden `pfm_conditionals`, `pfm_exclude`,
+    `pfm_targets` und `pfm_app_min`. Das sind Regeln fuer eine grafische
+    Oberflaeche (welches Feld ist sichtbar, welches schliesst welches aus, ab
+    welcher App-Version gibt es den Key) und haben in Apples Schema keine
+    Entsprechung. Ein Profil, das gegen diese Regeln verstoesst, faellt hier
+    also nicht auf.
+    """
+    plattformen = [p for p in (doc.get("pfm_platforms") or [])
+                   if isinstance(p, str)]
+    subkeys = [sk for sk in (doc.get("pfm_subkeys") or [])
+               if not _pfm_ueberspringen(sk)]
+    return {
+        "title": doc.get("pfm_title", ""),
+        "description": doc.get("pfm_description", ""),
+        "payload": {
+            "payloadtype": doc.get("pfm_domain", ""),
+            "supportedOS": {name: {} for name in plattformen},
+        },
+        "payloadkeys": [_pfm_keydef(sk) for sk in subkeys],
+        "_sources": [quelle] if quelle else [],
+        "_origin": "ProfileManifests",
+        "_origin_ref": ref,
+    }
+
+
+def load_manifest_schema(domain: str, ref: str = MANIFESTS_REF,
+                         refresh: bool = False,
+                         offline: bool = False) -> dict | None:
+    """Schema fuer eine Domain aus ProfileManifests, oder None."""
+    body = fetch_manifest(domain, ref=ref, refresh=refresh, offline=offline)
+    if body is None:
+        return None
+    import plistlib
+    try:
+        doc = plistlib.loads(body)
+    except Exception as fehler:
+        print(f"  WARN: Manifest fuer {domain} ist unlesbar: {fehler}",
+              file=sys.stderr)
+        return None
+    if not isinstance(doc, dict) or not doc.get("pfm_domain"):
+        return None
+    return manifest_to_schema(
+        doc, ref=ref, quelle=f"{MANIFESTS_REPO}@{ref}:{domain}.plist")
 
 
 def index_payloads(branch: str, refresh: bool = False,

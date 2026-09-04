@@ -109,6 +109,7 @@ Create a JSON file with your profile configuration:
 ## Features
 
 - **Schema-validated**: Every key checked against Apple's official YAML definitions, top-level fields against `TopLevel.yaml` and each payload against its own schema
+- **Third-party domains**: `--manifests` adds ProfileManifests as a second source, so Chrome, Office, Zoom and the rest validate too. Apple wins wherever both describe a payload type
 - **Deterministic UUIDs**: Same input always produces the same UUIDs (safe for re-deployment)
 - **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile. A certificate payload carries a `<data>` key, so write that spec as YAML and pass the value with the `!!binary` tag; JSON has no bytes type, so a base64 string in a JSON spec is rejected with `--validate-strict` and, without that flag, written into the profile as a `<string>` where the schema expects `<data>`
 - **OS-aware inspection**: Filter keys by target platform (macOS, iOS, tvOS, etc.)
@@ -206,14 +207,49 @@ it complements a real scanner such as gitleaks rather than replacing it.
 ## Testing
 
 ```bash
-python3 evals/run_tests.py        # Run all 7 eval tests
+python3 evals/run_tests.py        # Run all 8 eval tests
 python3 evals/run_tests.py -v     # Verbose output
 python3 evals/run_tests.py --eval-id 4   # Run a single test
 ```
 
 The suite calls every script with `--offline`, so a populated schema cache is a prerequisite. Run `python3 scripts/fetch_schema.py` once, or fill the cache from a local clone with `--from-clone`.
 
-CI runs the same suite on every push and pull request against `main`, plus five checks outside the test runner: `VERSION` against the `CHANGELOG.md` section and against the download name this README documents, the invented top-level key sent straight through the CLI, a schema inspection of the Wi-Fi payload, `tools/scan_secrets.py`, and a build of the release archive. That last one asserts the files the archive has to contain, the repository internals it must not contain, and identical bytes on two consecutive runs, so a broken package shows up before someone sets a tag rather than after. Eval 6 already covers the top-level rejection inside the suite; the CI step asserts the same contract at the shell level, where the exit code and the missing output file are what a caller actually sees. The Wi-Fi inspection is the only coverage `inspect_payload.py` gets, since no eval calls it. The Apple schema is pinned to a fixed commit, so a change upstream cannot turn the build red by itself. Bumping that commit is a deliberate edit in `.github/workflows/ci.yml`.
+CI runs the same suite on every push and pull request against `main`, plus six checks outside the test runner: `VERSION` against the `CHANGELOG.md` section and against the download name this README documents, the invented top-level key sent straight through the CLI, a schema inspection of the Wi-Fi payload, a Chrome profile built against ProfileManifests at a pinned commit, `tools/scan_secrets.py`, and a build of the release archive. That last one asserts the files the archive has to contain, the repository internals it must not contain, and identical bytes on two consecutive runs, so a broken package shows up before someone sets a tag rather than after. Eval 6 already covers the top-level rejection inside the suite; the CI step asserts the same contract at the shell level, where the exit code and the missing output file are what a caller actually sees. The Wi-Fi inspection is the only coverage `inspect_payload.py` gets, since no eval calls it. The Chrome step is the only one that reaches ProfileManifests: it asserts that the payload type is rejected without `--manifests`, accepted with it, that an invented Chrome key still fails, and that no manifest ends up in the working tree. Both schema sources are pinned to a fixed commit, so a change upstream cannot turn the build red by itself. Bumping either commit is a deliberate edit in `.github/workflows/ci.yml`.
+
+## Third-Party Domains
+
+Apple's YAML covers Apple's domains. A payload of type `com.google.Chrome`,
+`com.microsoft.office` or `us.zoom.config` is rejected under
+`--validate-strict` as an unknown PayloadType, because Apple never described
+it. `--manifests` adds
+[ProfileManifests](https://github.com/ProfileManifests/ProfileManifests) as a
+second source, the collection that also powers ProfileCreator and iMazing
+Profile Editor.
+
+```bash
+python3 scripts/inspect_payload.py com.google.Chrome --manifests
+python3 scripts/build_mobileconfig.py chrome.json \
+  -o chrome.mobileconfig --validate-strict --manifests
+```
+
+Apple wins. ProfileManifests is only consulted for payload types Apple does
+not describe at all, and nothing is merged, so it is always clear which rule
+applied. For PPPC the difference is one key: Apple's TCC schema lists 24
+services, ProfileManifests lists 25, and the extra one is `RemoteDesktop`.
+
+Every run that used the second source says so on stderr, and
+`inspect_payload.py` prints the origin in its header.
+
+**ProfileManifests has no license.** No LICENSE file, and the GitHub API
+reports `"license": null` (checked 2026-09-04). Without a license there is no
+grant to redistribute, so nothing from it lives in this repository, nothing
+ships in the release archive, and no manifest is used as a test fixture.
+`--manifests` fetches one file at runtime into
+`~/.cache/mobileconfig-builder/profilemanifests/<ref>/`. Pin the ref with
+`--manifests-ref <sha>` when you want the same schema on the next run;
+without it the default is the `master` branch. `references/schema-format.md`
+documents how the manifest fields are translated and what is deliberately
+dropped.
 
 ## Common PayloadTypes
 
@@ -235,7 +271,8 @@ CI runs the same suite on every push and pull request against `main`, plus five 
 - **`<data>` fields need a YAML spec.** Keys of type `<data>` (embedded certificates, push tokens) expect raw bytes. YAML carries those with the `!!binary` tag and validates through. A JSON spec cannot: a plain base64 string fails as `expected <data>, got str`, and the `{"__base64__": "..."}` marker described in `references/data-fields.md` fails as `got dict`, because `build_mobileconfig.py` does not decode it yet.
 - **The schema cache never expires.** A cached file is served until you run `fetch_schema.py --refresh`. A payload type Apple adds shows up on the next online fetch because the file is missing locally, but keys Apple changes inside an existing file stay stale until a refresh.
 - **No validator for existing profiles.** The tool checks what it builds. Handing it a `.mobileconfig` from somewhere else is not supported.
-- **Keychain signing is macOS only, and its success path is not in CI.** `--sign-identity` goes through `/usr/bin/security`, which exists on macOS and nowhere else; on any other platform it exits 2 and points at `--sign-cert`. Signing from PEM files still needs `openssl` in `PATH`. Eval 7 covers the failure paths of both on every platform. The success path of the keychain route was verified by hand against a throwaway keychain, see the release notes for the commands.
+- **The second schema source is a community source.** ProfileManifests is maintained by Mac Admins, not by Google, Microsoft or Zoom. A green `--validate-strict` against a manifest means the keys and types match what the community wrote down. The manifest fields `pfm_conditionals`, `pfm_exclude`, `pfm_targets` and `pfm_app_min` are not translated, so a profile that violates those rules passes here.
+- **Keychain signing is macOS only, and its success path is not in CI.** `--sign-identity` goes through `/usr/bin/security`, which exists on macOS and nowhere else; on any other platform it exits 2 and points at `--sign-cert`. Signing from PEM files still needs `openssl` in `PATH`. Eval 7 covers the failure paths of both on every platform. The success path of the keychain route was verified by hand against a throwaway keychain; `references/signing.md` has the import and `set-key-partition-list` commands that make an unattended run possible.
 - **PyYAML is installed at runtime.** On first use the scripts run `pip install pyyaml` when the module is missing, and retry with `--break-system-packages` for a Python whose packages the system manages. If both attempts fail, the script names the pip command to run by hand and exits 2. On a locked-down machine, install it yourself first.
 - **Encrypted payloads are out of scope.** Apple allows a payload to be encrypted for one specific device. This tool writes plain text payloads only, which is why the secrets section below matters.
 - **DDM is not covered.** See the note below.

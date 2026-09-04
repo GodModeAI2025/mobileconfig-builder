@@ -101,14 +101,26 @@ diesen Schlüsselbund statt in die Suchliste des Benutzers.
 
 ### Was das Werkzeug prüft
 
-`security cms -S` beendet sich mit Exit 0, auch wenn es die Identität nicht
-findet: der Fehler steht nur auf stderr, und die Ausgabedatei bleibt bei null
-Bytes. Auf den Exit-Code allein ist also kein Verlass. `build_mobileconfig.py`
-sieht deshalb nach: die Ausgabedatei muss existieren, darf nicht leer sein,
-muss mit einer ASN.1-SEQUENCE anfangen, und der Inhalt wird mit
-`security cms -D` wieder ausgepackt und Byte für Byte mit dem gebauten Profil
-verglichen. Passt etwas davon nicht, wird die Datei gelöscht und der Lauf
-endet mit Exit 2.
+`security cms` ist beim Melden von Fehlern unbrauchbar. Mit einer Identität,
+die es nicht gibt, schreibt es `failed to encode data: unknown error -1` auf
+stderr, endet mit Exit **0** und legt eine Datei mit null Bytes an. Unter Last
+beendet es sich danach gar nicht mehr, sondern bleibt minutenlang stehen.
+
+`build_mobileconfig.py` geht deshalb zweigleisig vor.
+
+**Vorher.** Die Angabe aus `--sign-identity` wird gegen
+`security find-identity` geprüft, über die Policies smime, basic und
+codesigning und ohne `-v`, damit auch ein frisch importiertes, noch nicht
+vertrautes Zertifikat zählt. Kennt der Schlüsselbund den Namen nicht, bricht
+der Bau ab, bevor `security cms` überhaupt startet. Ein Tippfehler im Namen
+soll keinen Bau aufhängen. Ein SHA-1 wird hier auf den Namen aufgelöst, den
+`cms -N` erwartet, und ein Name, der auf mehrere Zertifikate passt, wird
+abgelehnt statt geraten.
+
+**Nachher.** Die fertige Datei muss existieren, darf nicht leer sein, muss mit
+einer ASN.1-SEQUENCE anfangen, und der Inhalt wird mit `security cms -D`
+wieder ausgepackt und Byte für Byte mit dem gebauten Profil verglichen. Passt
+etwas davon nicht, wird die Datei gelöscht und der Lauf endet mit Exit 2.
 
 Ohne `-H SHA256` signiert `security cms` mit SHA-1. Das Werkzeug setzt den
 Schalter, nachgeprüft mit
@@ -141,6 +153,6 @@ openssl smime -verify -in profil.mobileconfig -inform der \
 | `openssl smime` schlägt fehl mit „unable to load signing key" | Key braucht Passphrase oder ist falsches Format |
 | `security cms` meldet „failed to encode data: unknown error -1" | Die Identität aus `--sign-identity` gibt es unter diesem Namen nicht |
 | `--sign-identity` findet nichts, `security find-identity -p codesigning` schon | Falsche Policy. Für Profile zählt `smime` oder `basic` |
-| Der Aufruf hängt ohne Meldung | Der Schlüsselbund-Dialog wartet auf eine Fenstersitzung. Über SSH vorher `set-key-partition-list` setzen |
+| Der Aufruf hängt ohne Meldung | Der Schlüsselbund ist gesperrt oder der Freigabe-Dialog wartet auf eine Fenstersitzung. Beobachtet als blockierter Aufruf in `SecKeyCreateSignature`. Vorher `security unlock-keychain` und `set-key-partition-list` setzen |
 | Gerät meldet „Profile installation failed: signature invalid" | falsche EKU / Key-Usage am Cert; oder Cert abgelaufen |
 | MDM-Push-Profil wird nicht akzeptiert | viele MDMs erwarten zusätzlich Encryption-Layer (separates Thema) |

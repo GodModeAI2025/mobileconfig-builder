@@ -23,6 +23,43 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 - Eval 7 `signing-error-paths`: prueft die Fehlerpfade beider Signier-Wege
   und laeuft auf jeder Plattform, weil der Erfolgsfall des
   Schluesselbund-Wegs eine Identitaet im Schluesselbund braucht.
+- **Zweite Schema-Quelle fuer Drittanbieter-Domains.** `--manifests` schaltet
+  ProfileManifests zu, damit `com.google.Chrome`, `com.microsoft.office`,
+  `us.zoom.config` und der Rest nicht mehr als unbekannter PayloadType
+  abgelehnt werden. `--manifests-ref` pinnt den Stand. Gilt fuer
+  `build_mobileconfig.py` und `inspect_payload.py`.
+
+  Apple gewinnt: die zweite Quelle wird nur gefragt, wenn Apple den
+  PayloadType gar nicht kennt, zusammengefuehrt wird nichts. Fuer PPPC ist
+  der Unterschied genau ein Key: Apples TCC-Schema kennt 24 Services,
+  ProfileManifests 25, der Mehrwert heisst RemoteDesktop.
+
+  ProfileManifests hat keine Lizenz, weder eine LICENSE-Datei noch ein
+  Lizenzfeld ueber die GitHub-API. Deshalb liegt kein Manifest im Repo, keins
+  im Release-Artefakt und keins als Test-Fixture. Geladen wird zur Laufzeit,
+  in einen eigenen Cache unter
+  `~/.cache/mobileconfig-builder/profilemanifests/<ref>/`. Jeder Lauf, der
+  gegen die zweite Quelle geprueft hat, sagt das auf stderr.
+
+  Uebersetzt wird nur, was der Validator auswertet. `pfm_conditionals`,
+  `pfm_exclude`, `pfm_targets` und `pfm_app_min` bleiben liegen, das sind
+  Regeln fuer eine Oberflaeche. Bedienelemente von ProfileCreator fallen
+  raus: `PFC_SegmentedControl_0` steht in den Manifesten fuer Chrome, Office
+  und Zoom als `pfm_require: always`, ist aber ein Reiter-Umschalter. Eins zu
+  eins uebersetzt haette jedes Chrome-Payload einen Key gebraucht, den Chrome
+  nie gesehen hat.
+  Ein Dictionary mit beliebigen Schluesseln beschreibt ProfileManifests ueber
+  das Platzhalter-Paar `{{key}}` und `{{value}}`, etwa `ExtensionSettings` bei
+  Chrome. Daraus wird Apples `key: ANY`, sonst haette `--validate-strict`
+  jede echte Erweiterungs-ID als unbekannten Key abgelehnt.
+
+  Kein Netz und keine unbekannte Domain fuehren zu einem Traceback: beides
+  endet mit einer Meldung, die sagt, welcher Cache-Ordner gemeint ist.
+- Eval 8 `profilemanifests-normalisierung`: prueft die Uebersetzung gegen ein
+  erfundenes Manifest, offline, ohne eine Datei aus dem fremden Repo.
+- CI-Schritt, der ein Chrome-Profil gegen einen gepinnten Stand von
+  ProfileManifests baut und danach prueft, dass kein Manifest im
+  Arbeitsverzeichnis gelandet ist.
 
 ### Behoben
 
@@ -36,9 +73,12 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   Lauf endet mit Exit 2 und einer Meldung.
 - **Der Exit-Code von `security cms` wird nicht mehr geglaubt.** Findet es
   die Identitaet nicht, meldet es den Fehler nur auf stderr, endet mit 0 und
-  hinterlaesst eine Datei mit null Bytes. Der Build prueft deshalb die
-  fertige Datei: nicht leer, faengt mit einer ASN.1-SEQUENCE an, und
-  `security cms -D` liefert Byte fuer Byte das gebaute Profil zurueck.
+  hinterlaesst eine Datei mit null Bytes. Unter Last endet es danach gar
+  nicht mehr, sondern bleibt stehen. Der Build prueft deshalb vorher, ob der
+  Schluesselbund die Identitaet ueberhaupt kennt, und bricht sonst ab, bevor
+  `security cms` startet. Danach prueft er die fertige Datei: nicht leer,
+  faengt mit einer ASN.1-SEQUENCE an, und `security cms -D` liefert Byte fuer
+  Byte das gebaute Profil zurueck.
 - **`security cms` signierte mit SHA-1.** Ohne `-H SHA256` ist SHA-1 die
   Vorgabe, nachgewiesen mit `openssl cms -cmsout -print`. Der Schalter ist
   jetzt gesetzt.

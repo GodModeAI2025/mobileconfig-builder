@@ -85,6 +85,25 @@ Wähle den/die passenden `PayloadType`(s). Häufige:
 
 Bei mehreren Use-Cases: ein einziges Profil mit mehreren Payloads bauen — das ist Apple-Standard.
 
+**Drittanbieter-Domains.** Apples Schema beschreibt nur Apple-Domains. Chrome
+(`com.google.Chrome`), Office (`com.microsoft.office`), Zoom
+(`us.zoom.config`) und der Rest stehen dort nicht und werden unter
+`--validate-strict` als unbekannter PayloadType abgelehnt. Für die gibt es
+`--manifests`, das ProfileManifests als zweite Quelle zuschaltet:
+
+```bash
+python3 scripts/inspect_payload.py com.google.Chrome --manifests
+python3 scripts/build_mobileconfig.py spec.json -o profil.mobileconfig \
+  --validate-strict --manifests
+```
+
+Apple gewinnt: gefragt wird die zweite Quelle nur, wenn Apple den PayloadType
+gar nicht kennt. Sag dem User, wenn ein Payload aus ProfileManifests geprüft
+wurde. Die Sammlung ist von Mac-Admins gepflegt und nicht von den
+Herstellern, hat keine Lizenzangabe und wird deshalb nur zur Laufzeit geladen,
+nichts davon liegt im Skill. `--manifests` braucht Netz beim ersten Aufruf je
+Domain, danach reicht der Cache. Details in `references/schema-format.md`.
+
 ### Schritt 3 — Schema des PayloadType inspizieren
 
 ```bash
@@ -246,9 +265,9 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 | Skript | Zweck |
 |---|---|
 | `scripts/fetch_schema.py` | Lädt/cached YAML-Schemas vom GitHub-Repo. Unterstützt `--offline`, `--from-clone`, `--list`. |
-| `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter und Required-Only. |
+| `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter, Required-Only und mit `--manifests` auch Drittanbieter-Domains. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
-| `evals/run_tests.py` | Regressions-Test-Suite mit 7 realistischen Test-Cases (siehe unten). |
+| `evals/run_tests.py` | Regressions-Test-Suite mit 8 realistischen Test-Cases (siehe unten). |
 
 ## Beispiele
 
@@ -261,7 +280,7 @@ Apple's neuere DDM-Deklarationen liegen unter `declarative/declarations/` im Rep
 Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die drei Skripte (fetch/inspect/build) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
 
 ```bash
-python3 evals/run_tests.py        # alle 7 Evals
+python3 evals/run_tests.py        # alle 8 Evals
 python3 evals/run_tests.py -v     # ausführlich (zeigt jeden Check)
 python3 evals/run_tests.py --eval-id 4   # nur einen
 ```
@@ -276,6 +295,7 @@ Die Suite prüft konkret:
 | 4 | `invalid-input-rejected` | Negativ-Test: kaputter Input (ungültiger EncryptionType, falscher Typ für AutoJoin) MUSS in `--validate-strict` mit Exit-Code 2 abbrechen, dem dokumentierten Validierungs-Fehlschlag. Auf stderr steht ein Report unter `Validation issues:`, der EncryptionType und AutoJoin benennt, kein Traceback. **Keine** Output-Datei. |
 | 5 | `list-payload-types` | `fetch_schema.py --list` listet ≥50 Payloads aus dem Cache, sortiert, Top-Hits sind enthalten. |
 | 6 | `unknown-top-level-key-rejected` | Ein erfundener Key im `meta`-Block bricht strikt mit Exit-Code 2 ab, gemeldet als `top-level: unknown key '...'` und nicht als Payload-Fund, ohne Output-Datei. Ohne `--validate-strict` baut dieselbe Spec weiter durch, und `wifi_guest.json` bleibt strikt grün. |
+| 8 | `profilemanifests-normalisierung` | Übersetzung eines ProfileManifests in Apples Schema-Form: Domain, Plattform, Typen, Pflichtangabe, Wertelisten, Bereiche, Regex, Verschachtelung. Bedienelemente von ProfileCreator und die CommonPayloadKeys fallen raus. Eine Spec gegen das Manifest baut strikt durch, ein erfundener Key wird abgelehnt. Das Manifest im Test ist erfunden, es liegt keines aus dem fremden Repo hier. |
 | 7 | `signing-error-paths` | Fehlerpfade beider Signier-Wege, auf jeder Plattform prüfbar: unbekannte Schlüsselbund-Identität und nicht existierende PEM-Datei enden mit Exit-Code 2, mit Meldung statt Traceback und ohne Rückstände. Insbesondere bleibt keine unsignierte Zwischendatei mit dem WLAN-Passwort liegen. Der Erfolgsfall des Schlüsselbund-Wegs ist nicht automatisiert, er braucht eine Identität im Schlüsselbund. |
 
 Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Einträge hat, hat Apple etwas am Repo geändert — Hinweis lesen, nicht reflexartig den Test anpassen.
@@ -286,4 +306,5 @@ Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Ei
 
 - `references/schema-format.md` — Erklärung des Apple-YAML-Schema-Aufbaus
 - `references/payload-cheatsheet.md` — kuratierte Liste der wichtigsten PayloadTypes mit Beispiel-Keys
-- `references/signing.md` — Hinweise zu Code-Signing-Zertifikaten und Trust-Chains
+- `references/signing.md` — Signieren über PEM-Dateien oder den macOS-Schlüsselbund, Zertifikatswahl, Trust-Chains, Fehlerdiagnose
+- `references/data-fields.md` — `<data>`-Felder und Base64

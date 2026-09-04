@@ -29,6 +29,8 @@ SKILL_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = SKILL_ROOT / "scripts"
 ASSETS = SKILL_ROOT / "assets"
 
+sys.path.insert(0, str(SCRIPTS))
+
 
 # ─── ANSI helpers ──────────────────────────────────────────────────────────
 def green(s): return f"\033[32m{s}\033[0m"
@@ -74,7 +76,8 @@ class TestCase:
 
 # ─── Helpers shared by tests ───────────────────────────────────────────────
 def run_build(spec_path: Path, out_path: Path, *,
-              strict: bool = True, expect_fail: bool = False
+              strict: bool = True, expect_fail: bool = False,
+              zusatz: list[str] | None = None
               ) -> subprocess.CompletedProcess:
     cmd = [
         sys.executable, str(SCRIPTS / "build_mobileconfig.py"),
@@ -84,19 +87,24 @@ def run_build(spec_path: Path, out_path: Path, *,
     ]
     if strict:
         cmd.append("--validate-strict")
+    cmd += zusatz or []
     return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
 
 def run_build_signiert(spec_path: Path, out_path: Path,
                        zusatz: list[str]) -> subprocess.CompletedProcess:
-    """Build mit Signier-Flags. Eigenes Timeout, weil `security find-identity`
-    auf einem Mac mit Endpoint-Security-Agent spuerbar traeger ist als der
-    reine Bau."""
+    """Build mit Signier-Flags.
+
+    Grosszuegiges Timeout mit Grund: `security cms -S` kann sich aufhaengen,
+    etwa wenn der Schluesselbund gesperrt ist und der Freigabe-Dialog kein
+    Fenster hat. Der Fehlerpfad hier laeuft zwar bewusst so, dass es dazu
+    nicht kommt, aber ein Timeout, das kuerzer ist als der Fehlerfall, macht
+    aus einem Befund einen Rateschluss."""
     cmd = [
         sys.executable, str(SCRIPTS / "build_mobileconfig.py"),
         str(spec_path), "-o", str(out_path), "--offline", "--validate-strict",
     ] + zusatz
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
 
 def load_plist(path: Path) -> dict:
@@ -485,6 +493,149 @@ def test_eval_7_signing_error_paths(workdir: Path) -> TestCase:
     return tc
 
 
+# Ein erfundenes Manifest, kein echtes. ProfileManifests hat keine Lizenz,
+# also liegt hier keine Datei aus dem fremden Repo, auch nicht als Fixture.
+# Geprueft wird die Uebersetzung, und die haengt nicht am Inhalt.
+EVAL_MANIFEST_REF = "_eval_fixture"
+EVAL_MANIFEST = {
+    "pfm_domain": "com.example.testapp",
+    "pfm_title": "Test-App",
+    "pfm_description": "Erfundenes Manifest fuer die Eval-Suite.",
+    "pfm_platforms": ["macOS"],
+    "pfm_format_version": 1,
+    "pfm_subkeys": [
+        # Faellt raus: CommonPayloadKeys sind Apples Zustaendigkeit.
+        {"pfm_name": "PayloadType", "pfm_type": "string",
+         "pfm_require": "always"},
+        # Faellt raus: Bedienelement von ProfileCreator, kein Preference-Key.
+        {"pfm_name": "PFC_SegmentedControl_0", "pfm_type": "string",
+         "pfm_require": "always",
+         "pfm_segments": {"Allgemein": ["UpdateChannel"]}},
+        {"pfm_name": "UpdateChannel", "pfm_type": "string",
+         "pfm_title": "Update-Kanal", "pfm_require": "always",
+         "pfm_range_list": ["stable", "beta"]},
+        {"pfm_name": "CacheSizeMB", "pfm_type": "integer",
+         "pfm_range_min": 10, "pfm_range_max": 4096},
+        {"pfm_name": "LicenseKey", "pfm_type": "string",
+         "pfm_format": "^[A-Z]{4}-[0-9]{4}$"},
+        {"pfm_name": "BlockedHosts", "pfm_type": "array",
+         "pfm_subkeys": [{"pfm_type": "string"}]},
+        {"pfm_name": "Proxy", "pfm_type": "dictionary", "pfm_subkeys": [
+            {"pfm_name": "Host", "pfm_type": "string",
+             "pfm_require": "always"},
+            {"pfm_name": "Port", "pfm_type": "integer"},
+        ]},
+        # Unbekannter Typ: lieber ungeprueft durchlassen als falsch ablehnen.
+        {"pfm_name": "Sonderfall", "pfm_type": "union policy"},
+    ],
+}
+
+
+def test_eval_8_profilemanifests_normalisierung(workdir: Path) -> TestCase:
+    """Uebersetzung eines ProfileManifests in Apples Schema-Form.
+
+    Ohne Netz: das erfundene Manifest wird in den Manifest-Cache gelegt und
+    von dort gelesen, genau wie ein echtes.
+    """
+    tc = TestCase(8, "profilemanifests-normalisierung")
+    from fetch_schema import manifest_cache_dir, manifest_to_schema
+
+    schema = manifest_to_schema(EVAL_MANIFEST, ref=EVAL_MANIFEST_REF,
+                                quelle="testapp.plist")
+    keys = {k["key"]: k for k in schema["payloadkeys"]}
+
+    tc.check("Domain und Plattform uebernommen",
+             schema["payload"]["payloadtype"] == "com.example.testapp"
+             and list(schema["payload"]["supportedOS"]) == ["macOS"]
+             and schema["_origin"] == "ProfileManifests",
+             f"{schema['payload']}")
+
+    tc.check("Typen uebersetzt, unbekannter Typ wird <any>",
+             keys["UpdateChannel"]["type"] == "<string>"
+             and keys["CacheSizeMB"]["type"] == "<integer>"
+             and keys["BlockedHosts"]["type"] == "<array>"
+             and keys["Proxy"]["type"] == "<dictionary>"
+             and keys["Sonderfall"]["type"] == "<any>",
+             f"{[(k, v['type']) for k, v in keys.items()]}")
+
+    tc.check("Pflicht nur bei pfm_require always",
+             keys["UpdateChannel"]["presence"] == "required"
+             and keys["CacheSizeMB"]["presence"] == "optional",
+             f"{[(k, v.get('presence')) for k, v in keys.items()]}")
+
+    tc.check("rangelist, range und format uebernommen",
+             keys["UpdateChannel"]["rangelist"] == ["stable", "beta"]
+             and keys["CacheSizeMB"]["range"] == {"min": 10, "max": 4096}
+             and keys["LicenseKey"]["format"] == "^[A-Z]{4}-[0-9]{4}$",
+             f"{keys['CacheSizeMB']}")
+
+    array_item = keys["BlockedHosts"]["subkeys"][0]
+    proxy_keys = {k["key"] for k in keys["Proxy"]["subkeys"]}
+    tc.check("Verschachtelung und Array-Item-Form uebernommen",
+             array_item["type"] == "<string>"
+             and proxy_keys == {"Host", "Port"},
+             f"array_item={array_item}, proxy={proxy_keys}")
+
+    tc.check("ProfileCreator-Pseudokeys und CommonPayloadKeys fallen raus",
+             "PFC_SegmentedControl_0" not in keys
+             and "PayloadType" not in keys,
+             f"{sorted(keys)}")
+
+    # Ueber die CLI, offline, aus dem Manifest-Cache.
+    cache = manifest_cache_dir(EVAL_MANIFEST_REF)
+    ziel = cache / "com.example.testapp.plist"
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        with ziel.open("wb") as fh:
+            plistlib.dump(EVAL_MANIFEST, fh)
+
+        gut = workdir / "manifest_gut.json"
+        gut.write_text(json.dumps({
+            "meta": {"PayloadIdentifier": "com.example.manifest.ok"},
+            "payloads": [{
+                "PayloadType": "com.example.testapp",
+                "UpdateChannel": "beta",
+                "CacheSizeMB": 512,
+                "BlockedHosts": ["a.invalid"],
+                "Proxy": {"Host": "proxy.invalid", "Port": 8080},
+            }],
+        }))
+        schlecht = workdir / "manifest_schlecht.json"
+        schlecht.write_text(json.dumps({
+            "meta": {"PayloadIdentifier": "com.example.manifest.bad"},
+            "payloads": [{
+                "PayloadType": "com.example.testapp",
+                "UpdateChannel": "nightly",
+                "GibtEsNicht": True,
+            }],
+        }))
+        zusatz = ["--manifests", "--manifests-ref", EVAL_MANIFEST_REF]
+        aus = workdir / "manifest_gut.mobileconfig"
+        ok = run_build(gut, aus, strict=True, zusatz=zusatz)
+        nein = run_build(schlecht, workdir / "manifest_schlecht.mobileconfig",
+                         strict=True, zusatz=zusatz)
+        nein_err = nein.stderr + nein.stdout
+
+        tc.check("Spec gegen das Manifest baut strikt durch",
+                 ok.returncode == 0 and aus.exists(),
+                 f"returncode={ok.returncode}: {ok.stderr.strip()[:200]}")
+        tc.check("Erfundener Key und unerlaubter Wert werden abgelehnt",
+                 nein.returncode == 2
+                 and "GibtEsNicht" in nein_err
+                 and "nightly" in nein_err,
+                 f"returncode={nein.returncode}: {nein_err[:250]}")
+        tc.check("Die Herkunft steht in der Meldung",
+                 "ProfileManifests" in (ok.stderr + ok.stdout),
+                 dim((ok.stderr + ok.stdout)[:200]))
+    finally:
+        try:
+            ziel.unlink()
+            cache.rmdir()
+        except OSError:
+            pass
+    return tc
+
+
 # ─── Runner ────────────────────────────────────────────────────────────────
 def load_declared_expectations() -> dict[int, int]:
     """eval-id → Anzahl der in evals.json deklarierten Erwartungen."""
@@ -519,6 +670,7 @@ TESTS = {
     5: test_eval_5_list_payload_types,
     6: test_eval_6_unknown_top_level_key,
     7: test_eval_7_signing_error_paths,
+    8: test_eval_8_profilemanifests_normalisierung,
 }
 
 

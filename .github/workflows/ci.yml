@@ -23,6 +23,12 @@ jobs:
       # eintragen und die Evals lokal gegenpruefen.
       SCHEMA_SHA: 67045e2fa06f528b196c01edee6a8bf88b844beb
 
+      # Gepinnter Stand von ProfileManifests, der zweiten Schema-Quelle fuer
+      # Drittanbieter-Domains. Aus demselben Grund fest verdrahtet wie oben.
+      # Neue SHA aus
+      #   git ls-remote https://github.com/ProfileManifests/ProfileManifests master
+      MANIFESTS_SHA: 32e11555ad66951aa4f402b0528377da1c671cdf
+
     steps:
       - name: Repo auschecken
         uses: actions/checkout@v4
@@ -143,6 +149,104 @@ jobs:
             fi
           done
           echo "OK: inspect_payload liefert die erwarteten Wi-Fi-Keys"
+
+      - name: Drittanbieter-Domain gegen ProfileManifests
+        run: |
+          work="$(mktemp -d)"
+          cat > "$work/chrome.json" <<'JSON'
+          {
+            "meta": {
+              "PayloadIdentifier": "com.example.ci.chrome",
+              "PayloadDisplayName": "Chrome-Richtlinien"
+            },
+            "payloads": [
+              {
+                "PayloadType": "com.google.Chrome",
+                "IncognitoModeAvailability": 1,
+                "PasswordManagerEnabled": false,
+                "URLBlocklist": ["example.invalid"]
+              }
+            ]
+          }
+          JSON
+
+          # Ohne --manifests kennt niemand com.google.Chrome. Das ist der
+          # Ausgangszustand, den die zweite Quelle behebt.
+          rc=0
+          python3 scripts/build_mobileconfig.py "$work/chrome.json" \
+            -o "$work/ohne.mobileconfig" --offline --validate-strict \
+            2> "$work/ohne.txt" || rc=$?
+          cat "$work/ohne.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: ohne --manifests wurde Exit 2 erwartet, bekommen $rc"
+            exit 1
+          fi
+          if ! grep -q "unknown PayloadType 'com.google.Chrome'" \
+              "$work/ohne.txt"; then
+            echo "FEHLER: die Meldung benennt den unbekannten PayloadType nicht"
+            exit 1
+          fi
+
+          # Mit --manifests, gegen den gepinnten Stand.
+          python3 scripts/build_mobileconfig.py "$work/chrome.json" \
+            -o "$work/mit.mobileconfig" --validate-strict \
+            --manifests --manifests-ref "$MANIFESTS_SHA" \
+            2> "$work/mit.txt"
+          cat "$work/mit.txt"
+          test -s "$work/mit.mobileconfig"
+          python3 -c "import plistlib,sys; \
+            p=plistlib.load(open(sys.argv[1],'rb'))['PayloadContent'][0]; \
+            assert p['PayloadType']=='com.google.Chrome', p; \
+            assert p['IncognitoModeAvailability']==1, p; \
+            print('Payload im Profil:', sorted(p))" "$work/mit.mobileconfig"
+          if ! grep -q 'ProfileManifests' "$work/mit.txt"; then
+            echo "FEHLER: der Lauf weist die Herkunft des Schemas nicht aus"
+            exit 1
+          fi
+
+          # Erfundener Chrome-Key faellt auch mit der zweiten Quelle durch.
+          cat > "$work/bad.json" <<'JSON'
+          {
+            "meta": {"PayloadIdentifier": "com.example.ci.chrome.bad"},
+            "payloads": [
+              {
+                "PayloadType": "com.google.Chrome",
+                "GibtEsNichtEnabled": true,
+                "IncognitoModeAvailability": 99
+              }
+            ]
+          }
+          JSON
+          rc=0
+          python3 scripts/build_mobileconfig.py "$work/bad.json" \
+            -o "$work/bad.mobileconfig" --validate-strict \
+            --manifests --manifests-ref "$MANIFESTS_SHA" \
+            2> "$work/bad.txt" || rc=$?
+          cat "$work/bad.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet fuer den erfundenen Key, bekommen $rc"
+            exit 1
+          fi
+          if [ -e "$work/bad.mobileconfig" ]; then
+            echo "FEHLER: trotz Validierungsfehler wurde eine Datei geschrieben"
+            exit 1
+          fi
+          if ! grep -q 'GibtEsNichtEnabled' "$work/bad.txt"; then
+            echo "FEHLER: der erfundene Key wird nicht benannt"
+            exit 1
+          fi
+
+          # Kein Manifest darf im Arbeitsverzeichnis landen: das Repo hat
+          # keine Lizenz, der Cache liegt woanders.
+          cache="$HOME/.cache/mobileconfig-builder/profilemanifests"
+          test -f "$cache/$MANIFESTS_SHA/com.google.Chrome.plist"
+          if git status --porcelain | grep -q .; then
+            echo "FEHLER: der Lauf hat das Arbeitsverzeichnis veraendert"
+            git status --porcelain
+            exit 1
+          fi
+          echo "OK: Chrome validiert gegen ProfileManifests, nichts davon" \
+            "liegt im Repo"
 
       - name: Secret-Scan
         run: python3 tools/scan_secrets.py

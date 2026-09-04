@@ -64,10 +64,11 @@
     {
       "id": 4,
       "prompt": "Ich gebe dir absichtlich kaputten Input: PayloadType com.apple.wifi.managed mit EncryptionType='SUPERWPA' (gibts nicht) und AutoJoin='ja' (string statt boolean). Bau das mit strikter Validierung — was passiert?",
-      "expected_output": "Strict-Mode-Build muss FAILEN (Exit-Code != 0). Die Fehlermeldung muss klar benennen, dass EncryptionType nicht im erlaubten Wertebereich liegt UND dass AutoJoin den falschen Typ hat. Es darf KEINE .mobileconfig-Datei erzeugt werden.",
+      "expected_output": "Strict-Mode-Build muss FAILEN, und zwar mit dem dokumentierten Validierungs-Exit-Code 2, nicht mit einem beliebigen Absturz. Die Fehlermeldung muss klar benennen, dass EncryptionType nicht im erlaubten Wertebereich liegt UND dass AutoJoin den falschen Typ hat. Es darf KEINE .mobileconfig-Datei erzeugt werden.",
       "files": [],
       "expectations": [
-        "Build script exits with non-zero exit code in strict mode",
+        "Build script exits with exit code 2 in strict mode (the documented validation failure, not an arbitrary crash)",
+        "Error output is a validation report and contains no Python traceback",
         "Error output mentions 'EncryptionType' by name",
         "Error output mentions the invalid value 'SUPERWPA' or the allowed list (WEP/WPA/WPA2/WPA3/Any/None)",
         "Error output mentions 'AutoJoin' by name",

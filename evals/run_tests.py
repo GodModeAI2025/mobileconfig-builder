@@ -92,6 +92,16 @@ def load_plist(path: Path) -> dict:
         return plistlib.load(f)
 
 
+def plist_parses(path: Path) -> tuple[bool, str]:
+    """(parsebar?, Detail) — ein kaputtes Plist soll ein roter Check sein,
+    kein Absturz des Runners."""
+    try:
+        load_plist(path)
+        return True, ""
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def is_uuid(s) -> bool:
     if not isinstance(s, str):
         return False
@@ -190,6 +200,11 @@ def test_eval_2_disable_apple_intelligence(workdir: Path) -> TestCase:
     if proc.returncode != 0:
         return tc
 
+    ok, detail = plist_parses(out)
+    tc.check("Output is a valid plist parseable by plistlib", ok, detail)
+    if not ok:
+        return tc
+
     p = load_plist(out)
     inner = find_payload(p, "com.apple.applicationaccess")
     tc.check("applicationaccess payload exists", inner is not None)
@@ -231,6 +246,11 @@ def test_eval_3_classroom_ipad(workdir: Path) -> TestCase:
     tc.check("Strict build exits 0", proc.returncode == 0,
              proc.stderr.strip() or proc.stdout.strip())
     if proc.returncode != 0:
+        return tc
+
+    ok, detail = plist_parses(out)
+    tc.check("Output is a valid plist parseable by plistlib", ok, detail)
+    if not ok:
         return tc
 
     p = load_plist(out)
@@ -285,10 +305,17 @@ def test_eval_4_invalid_input_rejected(workdir: Path) -> TestCase:
     if out.exists():
         out.unlink()
     proc = run_build(spec, out, strict=True)
+    err = proc.stderr
 
-    tc.check("Build exits with non-zero code in strict mode",
-             proc.returncode != 0, f"returncode={proc.returncode}")
-    err = proc.stderr + proc.stdout
+    # Exit-Code 2 ist der dokumentierte Validierungs-Fehlschlag. Ein
+    # beliebiger Absturz liefert 1 und darf diesen Negativtest nicht
+    # erfuellen, deshalb haengt jeder Check an der erwarteten Meldung.
+    tc.check("Build exits with code 2 (validation failure, not a crash)",
+             proc.returncode == 2, f"returncode={proc.returncode}")
+    tc.check("Error output is a validation report, not a traceback",
+             "Validation issues:" in err
+             and "Traceback (most recent call last)" not in err,
+             dim(err[:200]))
     tc.check("Error mentions 'EncryptionType'", "EncryptionType" in err,
              dim(err[:200]))
     tc.check("Error mentions allowed values or invalid value",
@@ -297,6 +324,9 @@ def test_eval_4_invalid_input_rejected(workdir: Path) -> TestCase:
     tc.check("Error mentions boolean type mismatch",
              "boolean" in err.lower() or "<boolean>" in err)
     tc.check("No output file was created", not out.exists())
+    tc.check("Errors go to stderr, not stdout",
+             "EncryptionType" not in proc.stdout,
+             dim(proc.stdout[:200]))
     return tc
 
 
@@ -322,6 +352,11 @@ def test_eval_5_list_payload_types(workdir: Path) -> TestCase:
                                  r"CommonPayloadKeys|TopLevel)", l)]
     tc.check(f"At least 50 payload entries listed (got {len(payload_lines)})",
              len(payload_lines) >= 50)
+
+    marker = re.compile(r"^\s+\S+\s+\[[^\]]*\]")
+    without_marker = [l for l in payload_lines if not marker.match(l)]
+    tc.check("Every listed entry shows an OS support marker like [iOS,macOS]",
+             not without_marker, f"without marker: {without_marker[:3]}")
 
     com_apple_lines = [l for l in payload_lines if "com.apple" in l]
     types_in_order = [l.strip().split()[0] for l in com_apple_lines]
@@ -376,6 +411,31 @@ def test_eval_6_unknown_top_level_key(workdir: Path) -> TestCase:
 
 
 # ─── Runner ────────────────────────────────────────────────────────────────
+def load_declared_expectations() -> dict[int, int]:
+    """eval-id → Anzahl der in evals.json deklarierten Erwartungen."""
+    data = json.loads((Path(__file__).resolve().parent / "evals.json")
+                      .read_text(encoding="utf-8"))
+    return {e["id"]: len(e.get("expectations", [])) for e in data["evals"]}
+
+
+def check_expectation_coverage(tc: TestCase, declared: dict[int, int]) -> None:
+    """Hält evals.json und run_tests.py in Deckung.
+
+    evals.json hat schon einmal 50 Erwartungen deklariert, während
+    run_tests.py 46 davon geprüft hat. Der Abgleich läuft nur bei sonst
+    grünem Eval, weil ein fehlgeschlagener Test früh zurückkehrt und dann
+    naturgemäß weniger Checks hat.
+    """
+    want = declared.get(tc.id)
+    if want is None:
+        tc.check(f"eval-{tc.id} is declared in evals.json", False,
+                 "no matching entry in evals.json")
+        return
+    if tc.all_green and tc.total != want:
+        tc.check(f"Implements all {want} expectations declared in evals.json",
+                 False, f"implemented {tc.total}")
+
+
 TESTS = {
     1: test_eval_1_wifi_guest,
     2: test_eval_2_disable_apple_intelligence,
@@ -394,6 +454,7 @@ def main():
     args = ap.parse_args()
 
     eval_ids = [args.eval_id] if args.eval_id else sorted(TESTS.keys())
+    declared = load_declared_expectations()
 
     print(bold(f"\nRunning mobileconfig-builder test suite "
                f"({len(eval_ids)} evals)\n"))
@@ -403,11 +464,12 @@ def main():
         workdir = Path(tdir)
         for eid in eval_ids:
             try:
-                cases.append(TESTS[eid](workdir))
+                tc = TESTS[eid](workdir)
             except Exception as e:
                 tc = TestCase(eid, f"crashed: {type(e).__name__}")
-                tc.check(f"Test runner did not crash", False, str(e))
-                cases.append(tc)
+                tc.check("Test runner did not crash", False, str(e))
+            check_expectation_coverage(tc, declared)
+            cases.append(tc)
 
     for tc in cases:
         tc.report(verbose=args.verbose)

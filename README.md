@@ -128,8 +128,8 @@ What that means in practice:
   where you keep other credentials.
 - The example specs under `assets/examples/` use invented passwords
   (`supersecret123`, `schoolpass2026`). They are listed as placeholders in
-  `tools/scan_secrets.py`; any other password value in a tracked file makes
-  the scan and the CI job fail.
+  `tools/scan_secrets.py`; any other value behind a key like `Password`,
+  `SharedSecret`, or `Passphrase` makes the scan and the CI job fail.
 
 Run the check yourself with `python3 tools/scan_secrets.py`. It reads only
 what `git ls-files` reports, needs no network, and prints file and line for
@@ -157,7 +157,7 @@ python3 evals/run_tests.py --eval-id 4   # Run a single test
 
 The suite calls every script with `--offline`, so a populated schema cache is a prerequisite. Run `python3 scripts/fetch_schema.py` once, or fill the cache from a local clone with `--from-clone`.
 
-CI runs the same suite on every push and pull request against `main`, plus three checks the suite does not cover on its own: a build with an invented top-level key that has to exit 2 without writing a file, a schema inspection of the Wi-Fi payload, and `tools/scan_secrets.py`. The Apple schema is pinned to a fixed commit there, so a change upstream cannot turn the build red by itself. Bumping that commit is a deliberate edit in `.github/workflows/ci.yml`.
+CI runs the same suite on every push and pull request against `main`, plus three checks outside the test runner: the invented top-level key sent straight through the CLI, a schema inspection of the Wi-Fi payload, and `tools/scan_secrets.py`. Eval 6 already covers the top-level rejection inside the suite; the CI step asserts the same contract at the shell level, where the exit code and the missing output file are what a caller actually sees. The Wi-Fi inspection is the only coverage `inspect_payload.py` gets, since no eval calls it. The Apple schema is pinned to a fixed commit, so a change upstream cannot turn the build red by itself. Bumping that commit is a deliberate edit in `.github/workflows/ci.yml`.
 
 ## Common PayloadTypes
 

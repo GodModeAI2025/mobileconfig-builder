@@ -49,18 +49,23 @@ def ensure_yaml():
     import importlib
     import subprocess
     basis = [sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"]
-    fehler = None
+    fehlschlaege = []
     for befehl in (basis, basis + ["--break-system-packages"]):
         try:
             subprocess.run(befehl, check=True, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as exc:
-            fehler = exc
+            fehlschlaege.append((befehl, exc.stderr))
             continue
         importlib.invalidate_caches()
         return
 
-    if fehler is not None and fehler.stderr:
-        sys.stderr.write(fehler.stderr.decode("utf-8", "replace"))
+    # Beide Anlaeufe, nicht nur der letzte: auf altem pip scheitert der zweite
+    # immer an der unbekannten Option, und diese Meldung wuerde den
+    # eigentlichen Grund des ersten Anlaufs verdecken.
+    for befehl, ausgabe in fehlschlaege:
+        print("Fehlgeschlagen: %s" % " ".join(befehl), file=sys.stderr)
+        if ausgabe:
+            sys.stderr.write(ausgabe.decode("utf-8", "replace"))
     print("PyYAML fehlt und liess sich nicht automatisch installieren. "
           "Bitte von Hand nachziehen:\n"
           f"  {sys.executable} -m pip install pyyaml", file=sys.stderr)

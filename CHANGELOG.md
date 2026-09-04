@@ -37,8 +37,9 @@ wurde und was jetzt im Artefakt liegt.
   ausgelieferte Python 3.9 bringt 21.2.4 mit: dort endete der erste
   inspect- oder build-Aufruf mit `no such option` und einem Traceback,
   statt PyYAML zu installieren. Jetzt laeuft erst der Aufruf ohne die
-  Option, danach der mit ihr. Scheitern beide, nennt die Meldung den
-  pip-Befehl von Hand, und der Aufruf endet mit Exit-Code 2.
+  Option, danach der mit ihr. Scheitern beide, steht die Ausgabe beider
+  Anlaeufe da, nicht nur die des letzten, dazu der pip-Befehl von Hand,
+  und der Aufruf endet mit Exit-Code 2.
 - **Der Negativtest haengt an der Fehlermeldung.** Eval 4 akzeptierte jeden
   Exit-Code ungleich 0, ein Absturz vor der Validierung bestand den Test also
   genauso wie die Ablehnung, die er nachweisen soll. Verlangt sind jetzt

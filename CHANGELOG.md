@@ -129,6 +129,17 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   des bisherigen Dreizeilers, SKILL.md sagt beim Abgrenzen jetzt auch, was
   der Unterschied praktisch bedeutet.
 
+- **Die Herkunftsangabe „geprueft gegen ProfileManifests" stand auch da, wenn
+  gar kein ProfileManifest gelesen wurde.** Der PayloadType wird zum
+  Dateinamen im Manifest-Cache. Einer mit Pfadanteilen las damit eine
+  beliebige `.plist` von der Platte, und der Lauf wies sie als
+  ProfileManifests-Herkunft aus. Gemessen mit
+  `../../../../../../<pfad>/fremd`: Exit 0 und die Herkunftszeile auf stderr.
+  Ein PayloadType, der nicht wie eine Preference-Domain aussieht, gilt jetzt
+  als unbekannt, und die Fehlermeldung sagt auch warum. Die Herkunftsangabe
+  selbst kommt nicht mehr aus dem Umkehrschluss "Apple kennt es nicht",
+  sondern aus dem `_origin`-Feld des Schemas, und nennt zusaetzlich den Stand.
+  Sie traegt den Lizenzhinweis, also muss sie stimmen.
 - **Der Secret-Scan haelt einen Wahrheitswert nicht mehr fuer ein Passwort.**
   Chrome hat den Policy-Key `PasswordManagerEnabled`, und ein Beispiel dafuer
   setzt ihn auf `false`. Bisher meldete der Scan das als undokumentierten

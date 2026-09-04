@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 import urllib.error
@@ -346,6 +347,42 @@ def manifest_cache_dir(ref: str = MANIFESTS_REF) -> Path:
     return CACHE_DIR / "profilemanifests" / ref
 
 
+# Der PayloadType kommt aus der Spec und wird hier zu einem Dateinamen und zu
+# einem URL-Bestandteil. Ungeprueft heisst das: ein PayloadType mit
+# Pfadanteilen liest ueber `cache / f"{domain}.plist"` irgendeine .plist von
+# der Platte, und der Lauf weist sie danach als ProfileManifests-Herkunft
+# aus. Gemessen mit einer selbst hingelegten Datei und dem PayloadType
+# `../../../../../../<pfad>/fremd`: Exit 0, und auf stderr stand "geprueft
+# gegen ProfileManifests".
+#
+# Eine Preference-Domain besteht aus Punkt-getrennten Labels. Mehr wird hier
+# nicht zugelassen, und das deckt jeden Namen ab, den ProfileManifests
+# vergibt.
+_DOMAIN_ERLAUBT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,190}$")
+
+# Fuer --manifests-ref dasselbe in schwaecherer Form: ein Git-Ref darf einen
+# Schraegstrich enthalten (`heads/master`), aber kein Verzeichnis nach oben.
+_REF_VERBOTEN = ("..", "\\")
+
+
+def ist_preference_domain(name: str) -> bool:
+    """Sieht `name` wie eine Preference-Domain aus?
+
+    Auch fuer die Fehlermeldung gedacht: wer einen PayloadType mit
+    Pfadanteilen angibt, soll erfahren, warum ProfileManifests dazu gar nicht
+    erst gefragt wird.
+    """
+    return bool(_DOMAIN_ERLAUBT.match(name)) and name not in (".", "..")
+
+
+def _pfadsicher(domain: str, ref: str) -> bool:
+    if not ist_preference_domain(domain):
+        return False
+    if not ref or ref.startswith("/") or any(x in ref for x in _REF_VERBOTEN):
+        return False
+    return all(teil not in ("", ".") for teil in ref.split("/"))
+
+
 def fetch_manifest(domain: str, ref: str = MANIFESTS_REF,
                    refresh: bool = False,
                    offline: bool = False) -> bytes | None:
@@ -355,7 +392,13 @@ def fetch_manifest(domain: str, ref: str = MANIFESTS_REF,
     wird ueber raw.githubusercontent statt ueber die Contents-API: der
     Dateiname ist die Domain, also reicht ein Versuch je Verzeichnis, und ein
     Verzeichnis-Listing kostet nur Rate-Limit.
+
+    Was nicht wie eine Preference-Domain aussieht, gilt hier als unbekannt.
+    Der Cache-Pfad wird aus dem Namen gebaut, und ein Name mit Pfadanteilen
+    liest sonst eine beliebige .plist von der Platte.
     """
+    if not _pfadsicher(domain, ref):
+        return None
     cp = manifest_cache_dir(ref) / f"{domain}.plist"
     if cp.exists() and not refresh:
         return cp.read_bytes()

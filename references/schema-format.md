@@ -128,6 +128,17 @@ Laufzeit, in einen eigenen Cache unter
 `~/.cache/mobileconfig-builder/profilemanifests/<ref>/`, und nur, wenn
 `--manifests` gesetzt ist.
 
+**Woher die Herkunftsangabe kommt.** Jeder Lauf, der gegen die zweite Quelle
+geprüft hat, sagt das auf stderr und nennt den Stand. Die Angabe stammt aus
+dem Schema selbst, das ein Feld `_origin` trägt, nicht aus dem Umkehrschluss
+„Apple kennt den PayloadType nicht, also kam er von ProfileManifests". Der
+Unterschied war messbar: der PayloadType wird zum Dateinamen im Cache, und
+einer mit Pfadanteilen (`../../…/fremd`) hat eine beliebige `.plist` von der
+Platte gelesen, die der Lauf danach als ProfileManifests-Herkunft ausgewiesen
+hat. Ein PayloadType, der nicht wie eine Preference-Domain aussieht, gilt hier
+jetzt als unbekannt, und die Herkunftsangabe hängt an der Quelle statt an
+ihrem Fehlen. Die Angabe trägt den Lizenzhinweis, deshalb muss sie stimmen.
+
 ### Übersetzung der Felder
 
 | ProfileManifests | Apple-Schema |

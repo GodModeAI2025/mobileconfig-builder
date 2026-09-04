@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fetch_schema import (  # noqa: E402
     MANIFESTS_REF,
     ensure_yaml,
+    ist_preference_domain,
     load_manifest_schema,
     load_schema_map,
 )
@@ -210,6 +211,10 @@ def validate_payload(payload: dict, branch: str,
         if manifeste is None and not ptype.startswith("com.apple."):
             hinweis = (". Apples Schema beschreibt nur Apple-Domains, "
                        "fuer Drittanbieter --manifests versuchen")
+        elif manifeste is not None and not ist_preference_domain(ptype):
+            hinweis = (". Das sieht nicht wie eine Preference-Domain aus, "
+                       "deshalb wird ProfileManifests danach gar nicht erst "
+                       "gefragt: der Name wird dort zu einem Dateinamen")
         elif manifeste is not None and manifeste.get("offline"):
             hinweis = (". Mit --offline wird nur der Manifest-Cache gelesen, "
                        "und dort liegt diese Domain nicht. Einmal ohne "
@@ -834,18 +839,25 @@ def main():
 
     # Wer gegen die zweite Quelle geprueft hat, soll das sehen. Die Angabe
     # steht auf stderr, damit sie eine Pipe auf stdout nicht verschmutzt.
+    #
+    # Gefragt wird das Schema selbst, nicht der Umkehrschluss "Apple kennt es
+    # nicht, also kam es von ProfileManifests". Die Herkunft traegt den
+    # Lizenzhinweis, und eine Herkunftsangabe, die aus dem Fehlen einer
+    # anderen Quelle folgt, traegt gar nichts.
     if manifeste is not None and not args.no_validate:
-        aus_manifest = sorted({
-            p["PayloadType"] for p in profile.get("PayloadContent", [])
-            if isinstance(p, dict) and p.get("PayloadType")
-            and load_all_schemas(args.branch).get(p["PayloadType"]) is None
-            and get_schema(p["PayloadType"], args.branch,
-                           manifeste=manifeste) is not None
-        })
+        aus_manifest = []
+        for p in profile.get("PayloadContent", []):
+            if not isinstance(p, dict) or not p.get("PayloadType"):
+                continue
+            schema = get_schema(p["PayloadType"], args.branch,
+                                manifeste=manifeste)
+            if isinstance(schema, dict) \
+                    and schema.get("_origin") == "ProfileManifests":
+                aus_manifest.append(p["PayloadType"])
         if aus_manifest:
-            print("Hinweis: geprueft gegen ProfileManifests statt gegen "
-                  "Apples Schema: " + ", ".join(aus_manifest),
-                  file=sys.stderr)
+            print(f"Hinweis: geprueft gegen ProfileManifests (Stand "
+                  f"{args.manifests_ref}) statt gegen Apples Schema: "
+                  + ", ".join(sorted(set(aus_manifest))), file=sys.stderr)
             print("  Die Sammlung ist von Mac-Admins gepflegt, nicht von "
                   "Apple, und hat keine Lizenzangabe.", file=sys.stderr)
 

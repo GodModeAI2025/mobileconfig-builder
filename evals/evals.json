@@ -138,6 +138,23 @@
         "An invented key and a value outside the range list are rejected with exit code 2",
         "The output names ProfileManifests as the source of the schema"
       ]
+    },
+    {
+      "id": 9,
+      "prompt": "Ich habe eine fertige .mobileconfig aus Jamf. Kann dein Werkzeug die pruefen, ohne dass ich sie neu baue?",
+      "expected_output": "validate_mobileconfig.py liest die fertige Datei, prueft die Profil-Ebene gegen TopLevel.yaml und jeden Eintrag aus PayloadContent gegen sein Schema. Verletzungen des Schemas sind Fehler und enden mit Exit 2. Stellen, zu denen Apples Schema nichts sagt, sind Warnungen und enden mit Exit 1: unbekannte Keys, PayloadTypes ohne Schema, format-Regex, doppelte PayloadUUIDs. Mit --strict werden daraus Fehler. Jeder Befund nennt seinen Pfad, --format json gibt dieselben Befunde maschinenlesbar aus, und eine Datei, die kein Profil ist, endet mit einer Meldung statt mit einem Traceback.",
+      "files": ["assets/examples/classroom_ipad.json"],
+      "expectations": [
+        "A profile this tool built validates with exit code 0",
+        "An invented payload key is reported as a warning and exits 1 by default",
+        "The same invented key becomes an error and exits 2 with --strict",
+        "The finding names the invented key and the path PayloadContent[0]",
+        "A value outside the schema's range list is an error and exits 2 without --strict",
+        "An invented top-level key is reported under top-level, not under a payload",
+        "A payload type without a schema is reported as unchecked, not as an error",
+        "--format json emits parseable JSON with level, path and exit code",
+        "A file that is not a property list exits 2 without a Python traceback"
+      ]
     }
   ]
 }

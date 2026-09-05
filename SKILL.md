@@ -245,6 +245,20 @@ Datei dem User geben (`present_files`) und kurz erklären:
 
 ## Spezialfälle
 
+### Ein vorhandenes Profil prüfen
+
+Bringt der User eine fertige `.mobileconfig` mit, etwa aus Jamf, Intune oder dem Profile Manager, dann geht sie nicht durch den Interview-Flow, sondern direkt in den Validator:
+
+```bash
+python3 scripts/validate_mobileconfig.py profil.mobileconfig --offline
+```
+
+Erkannt werden XML-Plists, Binär-Plists und signierte PKCS#7-Container; die signierte Form packt `openssl smime -verify -noverify` vorher aus. Zwei Stufen, eine Regel: **Fehler** heisst, das Schema wird verletzt (Pflichtkey fehlt, Typ passt nicht, Wert ausserhalb von `rangelist` oder `range`), Exit-Code 2. **Warnung** heisst, Apples Schema sagt dazu nichts (unbekannter Key, PayloadType ohne Schema, `format`-Regex, doppelte `PayloadUUID`), Exit-Code 1. `--strict` macht aus jeder Warnung einen Fehler.
+
+Wichtig beim Berichten: eine Warnung ist kein Befund gegen das Profil, sondern eine Stelle, an der dieses Werkzeug nichts sagen kann. Fremde Profile tragen regelmässig Keys, die Apple nie beschrieben hat. Nenne dem User beide Stufen getrennt und behaupte nicht, ein Profil mit Warnungen sei kaputt.
+
+Was der Validator nicht leistet: er prüft nicht, ob das Zielsystem die Keys unterstützt (`supportedOS` bleibt unbeachtet), er sagt nicht, wer signiert hat (die Zertifikatskette wird bewusst nicht geprüft), und verschlüsselte Payloads bleiben zu.
+
 ### Daten-Felder (`<data>`)
 
 Schema-Type `<data>` (z.B. eingebettete Zertifikate, Push-Token) erwarten Bytes. JSON kennt keinen Bytes-Typ, deshalb scheitert jede JSON-Spec an so einem Feld: der Validator meldet `expected <data>, got str` beim reinen Base64-String und `expected <data>, got dict` beim `{"__base64__": ...}`-Marker, mit `--validate-strict` bricht der Build dann mit Exit-Code 2 ab. Schreib die Spec in diesem Fall als YAML und übergib den Wert mit dem `!!binary`-Tag:
@@ -293,7 +307,8 @@ geprüft ist.
 | `scripts/fetch_schema.py` | Lädt/cached YAML-Schemas vom GitHub-Repo. Unterstützt `--offline`, `--from-clone`, `--list`. |
 | `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter, Required-Only und mit `--manifests` auch Drittanbieter-Domains. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
-| `evals/run_tests.py` | Regressions-Test-Suite mit 8 realistischen Test-Cases (siehe unten). |
+| `scripts/validate_mobileconfig.py` | Prüft eine fertige `.mobileconfig`, egal woher sie kommt. Liest XML-Plists, Binär-Plists und signierte PKCS#7-Container. |
+| `evals/run_tests.py` | Regressions-Test-Suite mit 9 realistischen Test-Cases (siehe unten). |
 
 ## Beispiele
 
@@ -303,10 +318,10 @@ geprüft ist.
 
 ## Tests / Evals
 
-Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die drei Skripte (fetch/inspect/build) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
+Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die vier Skripte (fetch/inspect/build/validate) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
 
 ```bash
-python3 evals/run_tests.py        # alle 8 Evals
+python3 evals/run_tests.py        # alle 9 Evals
 python3 evals/run_tests.py -v     # ausführlich (zeigt jeden Check)
 python3 evals/run_tests.py --eval-id 4   # nur einen
 ```
@@ -323,6 +338,7 @@ Die Suite prüft konkret:
 | 6 | `unknown-top-level-key-rejected` | Ein erfundener Key im `meta`-Block bricht strikt mit Exit-Code 2 ab, gemeldet als `top-level: unknown key '...'` und nicht als Payload-Fund, ohne Output-Datei. Ohne `--validate-strict` baut dieselbe Spec weiter durch, und `wifi_guest.json` bleibt strikt grün. |
 | 8 | `profilemanifests-normalisierung` | Übersetzung eines ProfileManifests in Apples Schema-Form: Domain, Plattform, Typen, Pflichtangabe, Wertelisten, Bereiche, Regex, Verschachtelung. Bedienelemente von ProfileCreator und die CommonPayloadKeys fallen raus. Eine Spec gegen das Manifest baut strikt durch, ein erfundener Key wird abgelehnt. Das Manifest im Test ist erfunden, es liegt keines aus dem fremden Repo hier. |
 | 7 | `signing-error-paths` | Fehlerpfade beider Signier-Wege, auf jeder Plattform prüfbar: unbekannte Schlüsselbund-Identität und nicht existierende PEM-Datei enden mit Exit-Code 2, mit Meldung statt Traceback und ohne Rückstände. Insbesondere bleibt keine unsignierte Zwischendatei mit dem WLAN-Passwort liegen, und beim zweiten Bau auf denselben Pfad überlebt das dort liegende gültige Profil einen gescheiterten Signier-Versuch. Die Schlüsselbund-Checks decken die Vorabprüfung ab, nicht das Aufräumen: dort wird abgebrochen, bevor eine Datei entsteht. Den Ausgabepfad prüft der PEM-Weg. Der Erfolgsfall des Schlüsselbund-Wegs ist nicht automatisiert, er braucht eine Identität im Schlüsselbund. |
+| 9 | `validate-mobileconfig` | Der Validator gegen ein fertiges Profil: ein selbst gebautes läuft mit Exit 0 durch, ein erfundener Key ist eine Warnung mit Exit 1 und mit `--strict` ein Fehler mit Exit 2, ein Wert ausserhalb der `rangelist` ist auch ohne `--strict` ein Fehler, ein erfundener Top-Level-Key wird als `top-level` gemeldet und nicht als Payload-Fund, ein PayloadType ohne Schema gilt als ungeprüft statt als falsch, `--format json` liefert Stufe, Pfad und Exit-Code, und eine Datei, die kein Profil ist, endet mit einer Meldung statt mit einem Traceback. |
 
 Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Einträge hat, hat Apple etwas am Repo geändert — Hinweis lesen, nicht reflexartig den Test anpassen.
 

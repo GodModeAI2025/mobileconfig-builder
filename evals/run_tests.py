@@ -672,6 +672,138 @@ def test_eval_8_profilemanifests_normalisierung(workdir: Path) -> TestCase:
     return tc
 
 
+def run_validate(pfade, *, strict: bool = False,
+                 zusatz: list[str] | None = None
+                 ) -> subprocess.CompletedProcess:
+    cmd = [sys.executable, str(SCRIPTS / "validate_mobileconfig.py")]
+    cmd += [str(p) for p in pfade]
+    cmd.append("--offline")
+    if strict:
+        cmd.append("--strict")
+    cmd += zusatz or []
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+
+def test_eval_9_validate_mobileconfig(workdir: Path) -> TestCase:
+    tc = TestCase(9, "validate-mobileconfig")
+    arbeit = workdir / "eval9"
+    arbeit.mkdir(exist_ok=True)
+
+    gut = arbeit / "gut.mobileconfig"
+    bau = run_build(ASSETS / "examples" / "classroom_ipad.json", gut,
+                    strict=True)
+    if bau.returncode != 0 or not gut.exists():
+        tc.check("Build of the reference profile succeeds", False,
+                 dim(bau.stderr[:300]))
+        return tc
+
+    proc = run_validate([gut])
+    tc.check("A profile this tool built validates with exit code 0",
+             proc.returncode == 0, dim(proc.stdout[:300]))
+
+    # Erfundener Payload-Key: Apples Schema sagt dazu nichts, also Warnung.
+    erfunden = arbeit / "erfunden.mobileconfig"
+    profil = load_plist(gut)
+    profil["PayloadContent"][0]["GibtEsNichtKey"] = "irgendwas"
+    with erfunden.open("wb") as fh:
+        plistlib.dump(profil, fh)
+
+    lax = run_validate([erfunden])
+    tc.check("An invented payload key is a warning and exits 1 by default",
+             lax.returncode == 1 and "WARNUNG" in lax.stdout,
+             f"returncode={lax.returncode}: {dim(lax.stdout[:300])}")
+
+    streng = run_validate([erfunden], strict=True)
+    tc.check("The same key becomes an error and exits 2 with --strict",
+             streng.returncode == 2 and "FEHLER" in streng.stdout,
+             f"returncode={streng.returncode}: {dim(streng.stdout[:300])}")
+
+    tc.check("The finding names the key and the path PayloadContent[0]",
+             "GibtEsNichtKey" in lax.stdout
+             and "PayloadContent[0]" in lax.stdout,
+             dim(lax.stdout[:300]))
+
+    # Wert ausserhalb der rangelist: das Schema wird verletzt, also Fehler,
+    # und zwar auch ohne --strict.
+    verletzt = arbeit / "verletzt.mobileconfig"
+    profil = load_plist(gut)
+    profil["PayloadContent"][0]["EncryptionType"] = "SUPERWPA"
+    with verletzt.open("wb") as fh:
+        plistlib.dump(profil, fh)
+    schema_bruch = run_validate([verletzt])
+    tc.check("A value outside the range list is an error and exits 2 "
+             "without --strict",
+             schema_bruch.returncode == 2
+             and "SUPERWPA" in schema_bruch.stdout,
+             f"returncode={schema_bruch.returncode}: "
+             f"{dim(schema_bruch.stdout[:300])}")
+
+    # Erfundener Top-Level-Key: gehoert unter top-level, nicht unter einen
+    # Payload. Das ist genau die Verwechslung, die Eval 6 fuer den Bau-Pfad
+    # ausschliesst.
+    obenauf = arbeit / "obenauf.mobileconfig"
+    profil = load_plist(gut)
+    profil["TotallyMadeUpKey"] = "nope"
+    with obenauf.open("wb") as fh:
+        plistlib.dump(profil, fh)
+    oben = run_validate([obenauf])
+    zeilen = [z for z in oben.stdout.splitlines()
+              if "TotallyMadeUpKey" in z]
+    tc.check("An invented top-level key is reported under top-level, "
+             "not under a payload",
+             len(zeilen) == 1 and "top-level" in zeilen[0]
+             and "PayloadContent[" not in zeilen[0],
+             dim(str(zeilen)[:300]))
+
+    # PayloadType ohne Schema: ungeprueft statt falsch geprueft.
+    fremd = arbeit / "fremd.mobileconfig"
+    profil = load_plist(gut)
+    profil["PayloadContent"].append({
+        "PayloadType": "com.google.Chrome",
+        "PayloadVersion": 1,
+        "PayloadIdentifier": "com.example.classroom.ipad.chrome",
+        "PayloadUUID": "1cb1e0f4-4a2a-4a1e-9a3d-0b6d5b2f0e11",
+        "PayloadDisplayName": "Chrome",
+    })
+    with fremd.open("wb") as fh:
+        plistlib.dump(profil, fh)
+    ohne_schema = run_validate([fremd])
+    tc.check("A payload type without a schema is reported as unchecked, "
+             "not as an error",
+             ohne_schema.returncode == 1
+             and "com.google.Chrome" in ohne_schema.stdout
+             and "nicht geprueft" in ohne_schema.stdout,
+             f"returncode={ohne_schema.returncode}: "
+             f"{dim(ohne_schema.stdout[:300])}")
+
+    als_json = run_validate([verletzt], zusatz=["--format", "json"])
+    try:
+        daten = json.loads(als_json.stdout)
+        befunde = daten["dateien"][0]["befunde"]
+        json_ok = (daten["exit_code"] == 2
+                   and als_json.returncode == 2
+                   and befunde
+                   and all({"stufe", "pfad", "text"} <= set(b) for b in befunde))
+        json_detail = ""
+    except (ValueError, KeyError, IndexError) as fehler:
+        json_ok = False
+        json_detail = f"{type(fehler).__name__}: {fehler}"
+    tc.check("--format json emits parseable JSON with level, path and "
+             "exit code", json_ok, dim(json_detail or als_json.stdout[:200]))
+
+    # Keine Plist: Meldung statt Traceback.
+    mist = arbeit / "keine-plist.mobileconfig"
+    mist.write_text("das ist kein Profil\n", encoding="utf-8")
+    kein_profil = run_validate([mist])
+    tc.check("A file that is not a property list exits 2 without a traceback",
+             kein_profil.returncode == 2
+             and "Traceback (most recent call last)" not in kein_profil.stderr
+             and "Traceback (most recent call last)" not in kein_profil.stdout,
+             f"returncode={kein_profil.returncode}: "
+             f"{dim(kein_profil.stdout[:200])}")
+    return tc
+
+
 # ─── Runner ────────────────────────────────────────────────────────────────
 def load_declared_expectations() -> dict[int, int]:
     """eval-id → Anzahl der in evals.json deklarierten Erwartungen."""
@@ -707,6 +839,7 @@ TESTS = {
     6: test_eval_6_unknown_top_level_key,
     7: test_eval_7_signing_error_paths,
     8: test_eval_8_profilemanifests_normalisierung,
+    9: test_eval_9_validate_mobileconfig,
 }
 
 

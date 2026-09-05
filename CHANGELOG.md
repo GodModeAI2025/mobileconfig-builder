@@ -12,6 +12,56 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 
 ### Hinzugefuegt
 
+- **Validator fuer bereits vorhandene Profile.**
+  `scripts/validate_mobileconfig.py` nimmt eine fertige `.mobileconfig`
+  entgegen, egal wer sie gebaut hat, und prueft sie gegen dasselbe Schema,
+  gegen das der Bau-Pfad prueft: die Profil-Ebene gegen `TopLevel.yaml`,
+  jeden Eintrag aus `PayloadContent` gegen sein eigenes Schema. Bis hierher
+  konnte das Werkzeug nur pruefen, was es selbst erzeugt hatte; ein Profil
+  aus Jamf oder Intune liess sich nicht vorlegen.
+
+  Drei Eingabeformen: XML-Plist, Binaer-Plist und signierter
+  PKCS#7-Container, letzterer ueber `openssl smime -verify -noverify`
+  ausgepackt. `-noverify` laesst die Zertifikatskette ungeprueft, die
+  Signatur nicht: eine nachtraeglich veraenderte Datei faellt durch, ein
+  gueltig signiertes Profil eines Ausstellers, dem niemand vertraut, geht
+  durch. Wem ein Profil gehoert, sagt der Validator also nicht.
+
+  Zwei Stufen mit einer Regel dahinter. **Fehler** heisst, das Schema wird
+  verletzt: Pflichtkey fehlt, Typ passt nicht, Wert liegt ausserhalb von
+  `rangelist` oder `range`. **Warnung** heisst, Apples Schema sagt dazu
+  nichts oder es gibt keins: unbekannter Key, PayloadType ohne Schema,
+  `format`-Regex, doppelt vergebene `PayloadUUID`. Exit 2 fuer Fehler, 1 fuer
+  reine Warnungen, 0 fuer nichts. `--strict` macht aus jeder Warnung einen
+  Fehler.
+
+  Die Trennung ist der Grund, warum das Werkzeug auf fremden Dateien
+  brauchbar bleibt: ein Profil aus einem realen MDM traegt regelmaessig Keys,
+  die Apple nie beschrieben hat, und Payloads von Anbietern, fuer die Apple
+  gar kein Schema hat. Gemessen an einem von Hand gebauten Jamf-Export mit
+  `PayloadEnabled` auf oberster Ebene, einem `JamfInternalKey` im
+  Restrictions-Payload und einem `com.google.Chrome`-Payload: drei Warnungen,
+  kein Fehler, Exit 1. Als Fehler gewertet waere dieselbe Datei rot, ohne
+  dass etwas an ihr falsch waere.
+
+  Jeder Befund nennt seinen Pfad (`top-level`, `PayloadContent[0]`),
+  `--format json` gibt dieselben Befunde maschinenlesbar aus, und mehrere
+  Dateien in einem Aufruf sind erlaubt.
+
+  Nicht abgedeckt: `supportedOS` wird nicht ausgewertet, ein iOS-only-Key in
+  einem macOS-Profil laeuft durch. Verschluesselte Payloads bleiben zu,
+  `EncryptedPayloadContent` ist `<data>` und wird nicht ausgepackt. Es gibt
+  kein SARIF, also landen die Befunde nicht in GitHub Code Scanning, und es
+  gibt keine fertige GitHub Action; der README-Abschnitt zeigt den direkten
+  Aufruf.
+- Eval 9 `validate-mobileconfig` und ein CI-Schritt, der den Validator von
+  aussen faehrt: gebautes Profil Exit 0, erfundener Key Warnung mit Exit 1 und
+  strikt Fehler mit Exit 2, `rangelist`-Verstoss Exit 2 auch ohne `--strict`,
+  JSON-Ausgabe mit Stufe und Pfad, keine Plist Exit 2 ohne Traceback. Der
+  Signier-Schritt reicht seine eigene signierte Ausgabe an den Validator
+  weiter und danach dieselbe Datei mit einem geaenderten Byte, weil dort der
+  einzige PKCS#7-Container dieser CI entsteht.
+
 - **Signieren ueber den macOS-Schluesselbund.** `--sign-identity <Name oder
   SHA-1>` signiert mit `/usr/bin/security cms -S` statt mit `openssl`. Der
   private Schluessel verlaesst den Schluesselbund nicht, was der Regelfall

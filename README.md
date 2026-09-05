@@ -116,7 +116,7 @@ Create a JSON file with your profile configuration:
 - **Validates profiles it did not build**: hand it a `.mobileconfig` exported from Jamf, Intune, Kandji or Profile Manager and it checks that file against the same rules, signed containers included
 - **Third-party domains**: `--manifests` adds ProfileManifests as a second source, so Chrome, Office, Zoom and the rest validate too. Apple wins wherever both describe a payload type
 - **Deterministic UUIDs**: Same input always produces the same UUIDs (safe for re-deployment)
-- **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile. A certificate payload carries a `<data>` key, so write that spec as YAML and pass the value with the `!!binary` tag; JSON has no bytes type, so a base64 string in a JSON spec is rejected with `--validate-strict` and, without that flag, written into the profile as a `<string>` where the schema expects `<data>`
+- **Multi-payload support**: Combine Wi-Fi + Restrictions + Certificates in one profile. A certificate payload carries a `<data>` key, and a JSON spec reaches it through `{"__base64__": "..."}` or `{"__file__": "ca.der"}`; YAML keeps the `!!binary` tag. A bare base64 string is still a string and still fails as `expected <data>, got str`
 - **OS-aware inspection**: Filter keys by target platform (macOS, iOS, tvOS, etc.)
 - **Offline mode**: Works fully offline once schemas are cached
 - **Optional signing**: PKCS#7 signing for production MDM deployment, either with OpenSSL from PEM files or with `security cms` from a keychain identity
@@ -166,6 +166,43 @@ certificate without established trust looks the same as no signature at all.
 `references/signing.md` covers how to pick a certificate, what the keychain
 access dialog does on the first call, and how to prepare a keychain for an
 unattended run.
+
+## Certificates and Other `<data>` Fields
+
+A certificate payload carries its bytes in a `<data>` key. YAML has the
+`!!binary` tag for that; JSON has no bytes type at all, which used to make
+every certificate payload a YAML-only affair. Two markers close that:
+
+```json
+{
+  "payloads": [
+    {
+      "PayloadType": "com.apple.security.root",
+      "PayloadCertificateFileName": "ca.cer",
+      "PayloadContent": {"__file__": "ca.der"}
+    }
+  ]
+}
+```
+
+`{"__base64__": "MIIDXTCC..."}` takes the base64 text directly, line breaks
+and spaces included, which is what you get from a PEM body or from
+`base64 < ca.der`. `{"__file__": "ca.der"}` reads a file; a relative path
+counts from the directory of the spec, not from the working directory, so the
+same spec builds the same profile from anywhere. Both are resolved before
+validation, anywhere in the spec, at any depth, in dictionaries and in lists.
+
+Apple wants DER on a certificate payload. A PEM file goes in as PEM bytes,
+because the marker copies what it reads, so convert first:
+
+```bash
+openssl x509 -in ca.pem -outform der -out ca.der
+```
+
+The marker replaces its whole dictionary, so nothing else may stand next to
+it, and a value that is not valid base64 or a path that cannot be read ends
+the run with exit code 2 and a message naming the spot, before any file is
+written.
 
 ## Checking an Existing Profile
 
@@ -258,14 +295,14 @@ it complements a real scanner such as gitleaks rather than replacing it.
 ## Testing
 
 ```bash
-python3 evals/run_tests.py        # Run all 9 eval tests
+python3 evals/run_tests.py        # Run all 10 eval tests
 python3 evals/run_tests.py -v     # Verbose output
 python3 evals/run_tests.py --eval-id 4   # Run a single test
 ```
 
 The suite calls every script with `--offline`, so a populated schema cache is a prerequisite. Run `python3 scripts/fetch_schema.py` once, or fill the cache from a local clone with `--from-clone`.
 
-CI runs the same suite on every push and pull request against `main`, plus seven checks outside the test runner: `VERSION` against the `CHANGELOG.md` section and against the download name this README documents, the validator run against a built profile and against three broken copies of it, the invented top-level key sent straight through the CLI, a schema inspection of the Wi-Fi payload, a Chrome profile built against ProfileManifests at a pinned commit, `tools/scan_secrets.py`, and a build of the release archive. That last one asserts the files the archive has to contain, the repository internals it must not contain, and identical bytes on two consecutive runs, so a broken package shows up before someone sets a tag rather than after. Eval 6 already covers the top-level rejection inside the suite; the CI step asserts the same contract at the shell level, where the exit code and the missing output file are what a caller actually sees. The signing step ends by handing its own signed output to the validator, and then the same file with one changed byte: that is the only place in this workflow where a PKCS#7 container exists, so it is the only place where unwrapping one can be measured. The Wi-Fi inspection is the only coverage `inspect_payload.py` gets, since no eval calls it. The Chrome step is the only one that reaches ProfileManifests: it asserts that the payload type is rejected without `--manifests`, accepted with it, that an invented Chrome key still fails, and that no manifest ends up in the working tree. Both schema sources are pinned to a fixed commit, so a change upstream cannot turn the build red by itself. Bumping either commit is a deliberate edit in `.github/workflows/ci.yml`.
+CI runs the same suite on every push and pull request against `main`, plus eight checks outside the test runner: `VERSION` against the `CHANGELOG.md` section and against the download name this README documents, the validator run against a built profile and against three broken copies of it, the invented top-level key sent straight through the CLI, a certificate payload built from a JSON spec through both data markers, a schema inspection of the Wi-Fi payload, a Chrome profile built against ProfileManifests at a pinned commit, `tools/scan_secrets.py`, and a build of the release archive. That last one asserts the files the archive has to contain, the repository internals it must not contain, and identical bytes on two consecutive runs, so a broken package shows up before someone sets a tag rather than after. Eval 6 already covers the top-level rejection inside the suite; the CI step asserts the same contract at the shell level, where the exit code and the missing output file are what a caller actually sees. The signing step ends by handing its own signed output to the validator, and then the same file with one changed byte: that is the only place in this workflow where a PKCS#7 container exists, so it is the only place where unwrapping one can be measured. The certificate step generates its own throwaway certificate with `openssl`, because no certificate may live in this repository, and asserts that both markers put the same bytes into the profile that the DER file holds. The Wi-Fi inspection is the only coverage `inspect_payload.py` gets, since no eval calls it. The Chrome step is the only one that reaches ProfileManifests: it asserts that the payload type is rejected without `--manifests`, accepted with it, that an invented Chrome key still fails, and that no manifest ends up in the working tree. Both schema sources are pinned to a fixed commit, so a change upstream cannot turn the build red by itself. Bumping either commit is a deliberate edit in `.github/workflows/ci.yml`.
 
 ## Third-Party Domains
 
@@ -319,7 +356,7 @@ dropped.
 
 ## Limitations
 
-- **`<data>` fields need a YAML spec.** Keys of type `<data>` (embedded certificates, push tokens) expect raw bytes. YAML carries those with the `!!binary` tag and validates through. A JSON spec cannot: a plain base64 string fails as `expected <data>, got str`, and the `{"__base64__": "..."}` marker described in `references/data-fields.md` fails as `got dict`, because `build_mobileconfig.py` does not decode it yet.
+- **`<data>` markers take bytes at face value.** `{"__base64__": "..."}` and `{"__file__": "..."}` are resolved anywhere in the spec tree, before validation and regardless of what the schema expects at that spot, because binding the resolution to `<data>` would mean knowing the schema before the spec exists. A marker in the wrong place shows up as `expected <string>, got bytes`. `__file__` reads whatever path it is given, with no size limit, and puts those bytes into the profile as they are: a PEM file lands as PEM, and Apple wants DER on a certificate payload, so convert with `openssl x509 -outform der` first. Neither marker checks that the bytes are a certificate.
 - **The schema cache never expires.** A cached file is served until you run `fetch_schema.py --refresh`. A payload type Apple adds shows up on the next online fetch because the file is missing locally, but keys Apple changes inside an existing file stay stale until a refresh.
 - **The validator checks the schema, not the deployment.** `validate_mobileconfig.py` answers one question: do the keys, types and value ranges in this file match Apple's YAML? It says nothing about whether the profile does what you meant, whether the target OS supports the keys it carries (`supportedOS` is not evaluated, so an iOS-only key in a macOS profile passes), or whether an MDM will accept it. It does not verify who signed a file: `openssl smime -verify -noverify` checks the signature but skips the certificate chain, so a valid signature from an issuer nobody trusts passes. Encrypted payloads stay opaque, `EncryptedPayloadContent` is data and is not unwrapped. Output is text or JSON; there is no SARIF, so findings do not land in GitHub Code Scanning.
 - **The second schema source is a community source.** ProfileManifests is maintained by Mac Admins, not by Google, Microsoft or Zoom. A green `--validate-strict` against a manifest means the keys and types match what the community wrote down. The manifest fields `pfm_conditionals`, `pfm_exclude`, `pfm_targets` and `pfm_app_min` are not translated, so a profile that violates those rules passes here.
@@ -334,7 +371,6 @@ dropped.
 
 Candidates, in no particular order, and none of them promised:
 
-- Decode `{"__base64__": "..."}` in `build_mobileconfig.py` so `<data>` keys work from a JSON spec too.
 - Make the cache directory configurable through an environment variable instead of the fixed `~/.cache/mobileconfig-builder/`.
 - **DDM declarations from the same spec.** The biggest one, and the one that decides whether this tool still matters in two years. `references/ddm.md` has the full write-up; the short version is below.
 

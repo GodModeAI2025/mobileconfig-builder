@@ -76,7 +76,7 @@ Wähle den/die passenden `PayloadType`(s). Häufige:
 | Exchange | `com.apple.eas.account` |
 | Restrictions iOS/iPadOS | `com.apple.applicationaccess` |
 | Restrictions macOS | `com.apple.applicationaccess.new` |
-| Zertifikat | `com.apple.security.pkcs1` / `.pkcs12` / `.root` (Spec als YAML, siehe Spezialfälle) |
+| Zertifikat | `com.apple.security.pkcs1` / `.pkcs12` / `.root` (Bytes über `__base64__` oder `__file__`, siehe Spezialfälle) |
 | FileVault | `com.apple.MCX.FileVault2` |
 | Software-Update | `com.apple.SoftwareUpdate` |
 | Profile Removal Password | `com.apple.profileRemovalPassword` |
@@ -164,7 +164,7 @@ Erzeuge eine JSON-Spec im folgenden Format:
 }
 ```
 
-Speichere als `<projektname>.json`. Sobald ein Payload ein `<data>`-Feld braucht, etwa bei Zertifikaten, schreib die Spec stattdessen als YAML (siehe Spezialfälle).
+Speichere als `<projektname>.json`. Braucht ein Payload ein `<data>`-Feld, etwa bei Zertifikaten, kommen die Bytes über `{"__base64__": "..."}` oder `{"__file__": "ca.der"}` hinein (siehe Spezialfälle).
 
 ### Schritt 6 — Build & Validierung
 
@@ -261,7 +261,19 @@ Was der Validator nicht leistet: er prüft nicht, ob das Zielsystem die Keys unt
 
 ### Daten-Felder (`<data>`)
 
-Schema-Type `<data>` (z.B. eingebettete Zertifikate, Push-Token) erwarten Bytes. JSON kennt keinen Bytes-Typ, deshalb scheitert jede JSON-Spec an so einem Feld: der Validator meldet `expected <data>, got str` beim reinen Base64-String und `expected <data>, got dict` beim `{"__base64__": ...}`-Marker, mit `--validate-strict` bricht der Build dann mit Exit-Code 2 ab. Schreib die Spec in diesem Fall als YAML und übergib den Wert mit dem `!!binary`-Tag:
+Schema-Type `<data>` (z.B. eingebettete Zertifikate, Push-Token) erwarten Bytes. JSON kennt keinen Bytes-Typ, deshalb gibt es dafür zwei Marker, die der Builder vor der Validierung auflöst:
+
+```json
+{
+  "PayloadType": "com.apple.security.root",
+  "PayloadCertificateFileName": "ca.cer",
+  "PayloadContent": {"__file__": "ca.der"}
+}
+```
+
+`{"__base64__": "MIIDXTCC..."}` nimmt den Base64-Text direkt, Zeilenumbrüche eingeschlossen. `{"__file__": "ca.der"}` liest eine Datei; ein relativer Pfad zählt vom Verzeichnis der Spec aus, nicht vom Arbeitsverzeichnis. Beide funktionieren in beliebiger Tiefe, auch in Listen. Neben dem Marker darf kein weiterer Key stehen, er ersetzt das ganze Dictionary.
+
+In YAML geht weiter der `!!binary`-Tag:
 
 ```yaml
 payloads:
@@ -270,7 +282,7 @@ payloads:
       MIIDXTCC...
 ```
 
-`build_mobileconfig.py` liest YAML-Specs direkt, PyYAML macht aus dem Tag echte Bytes, und in der Plist steht ein `<data>`-Element. Damit bauen auch Zertifikats-Payloads strikt validiert durch. Den `{"__base64__": "..."}`-Marker aus `references/data-fields.md` erkennt der Builder dagegen nicht; er ist eine Ausbaustelle, keine funktionierende Abkürzung.
+Drei Dinge zum Sagen, bevor der User sich wundert. Ein nackter Base64-String ohne Marker bleibt eine Zeichenkette und fällt weiter als `expected <data>, got str` durch. Der Marker kopiert die Bytes, wie sie dastehen: eine PEM-Datei landet als PEM im Profil, Apple will an einem Zertifikats-Payload aber DER, also vorher `openssl x509 -in ca.pem -outform der -out ca.der`. Und geprüft wird nur, dass der Wert dekodierbar beziehungsweise die Datei lesbar ist, nicht ob dahinter wirklich ein Zertifikat steckt.
 
 ### Mehrfach-Payloads
 
@@ -308,7 +320,7 @@ geprüft ist.
 | `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter, Required-Only und mit `--manifests` auch Drittanbieter-Domains. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
 | `scripts/validate_mobileconfig.py` | Prüft eine fertige `.mobileconfig`, egal woher sie kommt. Liest XML-Plists, Binär-Plists und signierte PKCS#7-Container. |
-| `evals/run_tests.py` | Regressions-Test-Suite mit 9 realistischen Test-Cases (siehe unten). |
+| `evals/run_tests.py` | Regressions-Test-Suite mit 10 realistischen Test-Cases (siehe unten). |
 
 ## Beispiele
 
@@ -321,7 +333,7 @@ geprüft ist.
 Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die vier Skripte (fetch/inspect/build/validate) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
 
 ```bash
-python3 evals/run_tests.py        # alle 9 Evals
+python3 evals/run_tests.py        # alle 10 Evals
 python3 evals/run_tests.py -v     # ausführlich (zeigt jeden Check)
 python3 evals/run_tests.py --eval-id 4   # nur einen
 ```
@@ -340,6 +352,7 @@ Die Suite prüft konkret:
 | 7 | `signing-error-paths` | Fehlerpfade beider Signier-Wege, auf jeder Plattform prüfbar: unbekannte Schlüsselbund-Identität und nicht existierende PEM-Datei enden mit Exit-Code 2, mit Meldung statt Traceback und ohne Rückstände. Insbesondere bleibt keine unsignierte Zwischendatei mit dem WLAN-Passwort liegen, und beim zweiten Bau auf denselben Pfad überlebt das dort liegende gültige Profil einen gescheiterten Signier-Versuch. Die Schlüsselbund-Checks decken die Vorabprüfung ab, nicht das Aufräumen: dort wird abgebrochen, bevor eine Datei entsteht. Den Ausgabepfad prüft der PEM-Weg. Der Erfolgsfall des Schlüsselbund-Wegs ist nicht automatisiert, er braucht eine Identität im Schlüsselbund. |
 | 9 | `validate-mobileconfig` | Der Validator gegen ein fertiges Profil: ein selbst gebautes läuft mit Exit 0 durch, ein erfundener Key ist eine Warnung mit Exit 1 und mit `--strict` ein Fehler mit Exit 2, ein Wert ausserhalb der `rangelist` ist auch ohne `--strict` ein Fehler, ein erfundener Top-Level-Key wird als `top-level` gemeldet und nicht als Payload-Fund, ein PayloadType ohne Schema gilt als ungeprüft statt als falsch, `--format json` liefert Stufe, Pfad und Exit-Code, und eine Datei, die kein Profil ist, endet mit einer Meldung statt mit einem Traceback. |
 
+| 10 | `daten-marker-in-json-spec` | `{"__base64__": ...}` und `{"__file__": ...}` werden vor der Validierung zu Bytes, in beliebiger Tiefe und in Listen. Die Bytes im Profil sind Byte für Byte das Dekodierte beziehungsweise der Dateiinhalt. Kaputtes Base64, ein nicht lesbarer Pfad und ein Marker neben einem anderen Key enden mit Exit-Code 2, ohne Ausgabedatei und ohne Traceback. Ein nackter Base64-String bleibt eine Zeichenkette. |
 Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Einträge hat, hat Apple etwas am Repo geändert — Hinweis lesen, nicht reflexartig den Test anpassen.
 
 **Wann erweitern:** Neuer Use-Case (z.B. VPN-Profil mit Zertifikat) → Eintrag in `evals/evals.json` und passende Test-Funktion in `evals/run_tests.py`. Test-Funktionen sind absichtlich kurz und explizit gehalten, nicht generisch — leichter zu lesen als ein Mini-Framework.

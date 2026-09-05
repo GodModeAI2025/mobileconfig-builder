@@ -16,6 +16,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import base64
 import json
 import plistlib
 import re
@@ -804,6 +805,135 @@ def test_eval_9_validate_mobileconfig(workdir: Path) -> TestCase:
     return tc
 
 
+# Der Inhalt ist beliebig: das Schema prueft an einem <data>-Key den Typ,
+# nicht die Struktur der Bytes. Ein echtes Zertifikat waere hier nur ein
+# zweiter Grund, warum der Test scheitern kann, und im Repo darf ohnehin
+# keins liegen. Der CI-Schritt nimmt dafuer ein frisch erzeugtes.
+EVAL_DATEN = bytes(range(256)) * 3
+
+
+def _daten_spec(identifier: str, inhalt) -> dict:
+    return {
+        "meta": {"PayloadIdentifier": identifier},
+        "payloads": [{
+            "PayloadType": "com.apple.security.root",
+            "PayloadCertificateFileName": "test.cer",
+            "PayloadContent": inhalt,
+        }],
+    }
+
+
+def test_eval_10_daten_marker(workdir: Path) -> TestCase:
+    tc = TestCase(10, "daten-marker-in-json-spec")
+    arbeit = workdir / "eval10"
+    arbeit.mkdir(exist_ok=True)
+    (arbeit / "zertifikat.der").write_bytes(EVAL_DATEN)
+    base64_text = base64.b64encode(EVAL_DATEN).decode()
+
+    b64_spec = arbeit / "b64.json"
+    b64_spec.write_text(json.dumps(_daten_spec(
+        "com.example.eval10.b64", {"__base64__": base64_text})))
+    b64_out = arbeit / "b64.mobileconfig"
+    proc = run_build(b64_spec, b64_out, strict=True)
+    tc.check("A JSON spec with a __base64__ marker builds with "
+             "--validate-strict",
+             proc.returncode == 0 and b64_out.exists(),
+             f"returncode={proc.returncode}: {dim(proc.stderr[:300])}")
+
+    aus_profil = None
+    if b64_out.exists():
+        aus_profil = load_plist(b64_out)["PayloadContent"][0]["PayloadContent"]
+    tc.check("The <data> value in the profile is byte-for-byte the decoded "
+             "input",
+             isinstance(aus_profil, bytes) and aus_profil == EVAL_DATEN,
+             f"typ={type(aus_profil).__name__}")
+
+    # Der Pfad zaehlt vom Verzeichnis der Spec aus, deshalb steht hier nur
+    # der Dateiname und der Build laeuft trotzdem aus dem Repo-Wurzel.
+    datei_spec = arbeit / "datei.json"
+    datei_spec.write_text(json.dumps(_daten_spec(
+        "com.example.eval10.datei", {"__file__": "zertifikat.der"})))
+    datei_out = arbeit / "datei.mobileconfig"
+    proc = run_build(datei_spec, datei_out, strict=True)
+    gleich = False
+    if datei_out.exists():
+        gleich = (load_plist(datei_out)["PayloadContent"][0]["PayloadContent"]
+                  == EVAL_DATEN)
+    tc.check("A __file__ marker reads the file next to the spec and yields "
+             "the same bytes",
+             proc.returncode == 0 and gleich,
+             f"returncode={proc.returncode}: {dim(proc.stderr[:300])}")
+
+    def scheitert(name: str, inhalt) -> subprocess.CompletedProcess:
+        spec = arbeit / f"{name}.json"
+        spec.write_text(json.dumps(_daten_spec(
+            f"com.example.eval10.{name}", inhalt)))
+        ziel = arbeit / f"{name}.mobileconfig"
+        if ziel.exists():
+            ziel.unlink()
+        ergebnis = run_build(spec, ziel, strict=True)
+        ergebnis.ziel = ziel  # type: ignore[attr-defined]
+        return ergebnis
+
+    kaputt = scheitert("kaputt", {"__base64__": "kein gueltiges base64!!"})
+    tc.check("Invalid base64 exits 2 with a message and no traceback",
+             kaputt.returncode == 2
+             and "__base64__" in kaputt.stderr
+             and "Traceback (most recent call last)" not in kaputt.stderr,
+             f"returncode={kaputt.returncode}: {dim(kaputt.stderr[:300])}")
+
+    fehlt = scheitert("fehlt", {"__file__": "gibt-es-nicht.der"})
+    tc.check("A __file__ path that does not exist exits 2 and names the path",
+             fehlt.returncode == 2 and "gibt-es-nicht.der" in fehlt.stderr,
+             f"returncode={fehlt.returncode}: {dim(fehlt.stderr[:300])}")
+
+    daneben = scheitert("daneben", {"__base64__": base64_text, "extra": 1})
+    tc.check("A marker next to another key is rejected as ambiguous, exit 2",
+             daneben.returncode == 2 and "extra" in daneben.stderr,
+             f"returncode={daneben.returncode}: {dim(daneben.stderr[:300])}")
+
+    tc.check("No output file is left behind by any of the rejected specs",
+             not any(p.ziel.exists() for p in (kaputt, fehlt, daneben)),
+             ", ".join(str(p.ziel) for p in (kaputt, fehlt, daneben)
+                       if p.ziel.exists()))
+
+    # Ohne Marker bleibt alles, wie es war: ein nackter Base64-String ist
+    # eine Zeichenkette und faellt weiter durch die Typpruefung.
+    nackt = scheitert("nackt", base64_text)
+    tc.check("A plain base64 string is still a string and still fails as "
+             "expected <data>",
+             nackt.returncode == 2
+             and "expected <data>, got str" in nackt.stderr,
+             f"returncode={nackt.returncode}: {dim(nackt.stderr[:300])}")
+
+    # Verschachtelung, gegen kein Schema geprueft: hier geht es nur darum,
+    # dass der Marker in jeder Tiefe und auch in Listen erkannt wird.
+    tief_spec = arbeit / "tief.json"
+    tief_spec.write_text(json.dumps({
+        "meta": {"PayloadIdentifier": "com.example.eval10.tief"},
+        "payloads": [{
+            "PayloadType": "com.example.egal",
+            "Verschachtelt": {"Liste": [
+                {"__base64__": base64_text},
+                {"Tiefer": {"__file__": "zertifikat.der"}},
+            ]},
+        }],
+    }))
+    tief_out = arbeit / "tief.mobileconfig"
+    proc = run_build(tief_spec, tief_out, strict=False,
+                     zusatz=["--no-validate"])
+    tief_ok = False
+    if tief_out.exists():
+        liste = (load_plist(tief_out)["PayloadContent"][0]
+                 ["Verschachtelt"]["Liste"])
+        tief_ok = (liste[0] == EVAL_DATEN
+                   and liste[1]["Tiefer"] == EVAL_DATEN)
+    tc.check("Markers are resolved at any depth, inside dictionaries and "
+             "inside arrays", tief_ok,
+             f"returncode={proc.returncode}: {dim(proc.stderr[:300])}")
+    return tc
+
+
 # ─── Runner ────────────────────────────────────────────────────────────────
 def load_declared_expectations() -> dict[int, int]:
     """eval-id → Anzahl der in evals.json deklarierten Erwartungen."""
@@ -840,6 +970,7 @@ TESTS = {
     7: test_eval_7_signing_error_paths,
     8: test_eval_8_profilemanifests_normalisierung,
     9: test_eval_9_validate_mobileconfig,
+    10: test_eval_10_daten_marker,
 }
 
 

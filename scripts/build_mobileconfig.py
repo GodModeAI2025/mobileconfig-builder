@@ -25,6 +25,8 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import base64
+import binascii
 import json
 import os
 import plistlib
@@ -841,13 +843,151 @@ def _pruefe_cms_inhalt(profil: bytes, signiert: Path) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Daten-Felder: Base64 und Datei-Verweise in einer JSON-Spec
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema-Typ `<data>` will Bytes. YAML kann die uber `!!binary` tragen, JSON
+# nicht, und damit scheiterte bisher jeder Zertifikats-Payload aus einer
+# JSON-Spec: `expected <data>, got str` beim nackten Base64-String,
+# `expected <data>, got dict` beim Marker aus references/data-fields.md.
+# Betroffen ist jeder Payload mit einem `<data>`-Key, also
+# com.apple.security.root, .pkcs1, .pkcs12 und die anderen
+# Zertifikats-Payloads, waehrend README und Landingpage
+# Multi-Payload-Profile mit Zertifikaten bewerben.
+#
+# Aufgeloest wird vor der Validierung, im ganzen Spec-Baum, unabhaengig
+# davon, was das Schema an der Stelle erwartet. Waere die Aufloesung an
+# `<data>` gebunden, muesste sie das Schema kennen, bevor die Spec steht.
+# Wer den Marker an eine Stelle setzt, an der Bytes nichts zu suchen haben,
+# bekommt das von der Validierung gesagt: `expected <string>, got bytes`.
+BASE64_MARKER = "__base64__"
+DATEI_MARKER = "__file__"
+DATEN_MARKER = (BASE64_MARKER, DATEI_MARKER)
+
+
+def _base64_bytes(wert, pfad: str) -> bytes:
+    """Dekodiert den Wert hinter `__base64__`.
+
+    Zeilenumbrueche und Leerzeichen fliegen vorher raus: Base64 aus einer
+    PEM-Datei oder aus `openssl base64` kommt umgebrochen, und mit
+    `validate=True` waere jeder Umbruch ein Fehler.
+    """
+    if not isinstance(wert, str):
+        raise SchemaError(
+            f"{pfad}: {BASE64_MARKER} erwartet eine Zeichenkette, bekommen "
+            f"{type(wert).__name__}.")
+    kompakt = "".join(wert.split())
+    if not kompakt:
+        raise SchemaError(
+            f"{pfad}: {BASE64_MARKER} ist leer. Ein leeres <data>-Feld ist "
+            f"fast immer ein Versehen, deshalb wird hier abgebrochen statt "
+            f"null Bytes ins Profil zu schreiben.")
+    try:
+        return base64.b64decode(kompakt, validate=True)
+    except (binascii.Error, ValueError) as fehler:
+        raise SchemaError(
+            f"{pfad}: der Wert hinter {BASE64_MARKER} ist kein gueltiges "
+            f"Base64 ({fehler}). Erwartet wird der Inhalt zwischen den "
+            f"BEGIN- und END-Zeilen einer PEM-Datei oder die Ausgabe von "
+            f"`base64 < datei.der`.")
+
+
+def _datei_bytes(wert, basis: Path, pfad: str) -> bytes:
+    """Liest die Datei hinter `__file__`.
+
+    Ein relativer Pfad zaehlt vom Verzeichnis der Spec aus, nicht vom
+    Arbeitsverzeichnis: eine Spec soll aus jedem Verzeichnis heraus dasselbe
+    Profil ergeben. `~` wird aufgeloest, ein absoluter Pfad bleibt, wie er
+    ist.
+
+    Gelesen werden die Bytes, wie sie dastehen. Umgewandelt wird nichts: wer
+    eine PEM-Datei angibt, bekommt die PEM-Bytes ins Profil, und Apple will
+    an einem Zertifikats-Payload DER. Umwandeln kann
+    `openssl x509 -in cert.pem -outform der -out cert.der`.
+    """
+    if not isinstance(wert, str):
+        raise SchemaError(
+            f"{pfad}: {DATEI_MARKER} erwartet einen Pfad als Zeichenkette, "
+            f"bekommen {type(wert).__name__}.")
+    if not wert.strip():
+        raise SchemaError(f"{pfad}: {DATEI_MARKER} ist leer.")
+    quelle = Path(wert).expanduser()
+    if not quelle.is_absolute():
+        quelle = basis / quelle
+    try:
+        return quelle.read_bytes()
+    except OSError as fehler:
+        raise SchemaError(
+            f"{pfad}: {DATEI_MARKER} zeigt auf {quelle}, und die liess sich "
+            f"nicht lesen: {fehler.strerror}.\n"
+            f"Relative Pfade zaehlen vom Verzeichnis der Spec aus, hier also "
+            f"von {basis}.")
+
+
+def _marker_aufloesen(objekt: dict, basis: Path, pfad: str) -> bytes:
+    vorhanden = [m for m in DATEN_MARKER if m in objekt]
+    if len(vorhanden) > 1:
+        raise SchemaError(
+            f"{pfad}: {' und '.join(vorhanden)} stehen beide da. Zwei "
+            f"Quellen fuer dieselben Bytes, und welche gilt, waere geraten.")
+    marker = vorhanden[0]
+    if len(objekt) > 1:
+        fremd = sorted(k for k in objekt if k != marker)
+        raise SchemaError(
+            f"{pfad}: neben {marker} steht noch {', '.join(fremd)}. Der "
+            f"Marker ersetzt das ganze Dictionary durch Bytes, daneben ist "
+            f"kein Platz fuer weitere Keys.")
+    if marker == BASE64_MARKER:
+        return _base64_bytes(objekt[marker], pfad)
+    return _datei_bytes(objekt[marker], basis, pfad)
+
+
+def loese_daten_marker(objekt, basis: Path, pfad: str = ""):
+    """Ersetzt `__base64__`- und `__file__`-Marker im Spec-Baum durch Bytes.
+
+    Laeuft ueber Dictionaries und Listen, in beliebiger Tiefe. Alles andere
+    bleibt unangetastet. `pfad` sammelt die Stelle mit, damit eine kaputte
+    Angabe nicht als anonymer Fehler herauskommt.
+    """
+    if isinstance(objekt, dict):
+        if any(m in objekt for m in DATEN_MARKER):
+            return _marker_aufloesen(objekt, basis, pfad or "spec")
+        return {k: loese_daten_marker(v, basis, f"{pfad}.{k}" if pfad else k)
+                for k, v in objekt.items()}
+    if isinstance(objekt, list):
+        return [loese_daten_marker(v, basis, f"{pfad}[{i}]")
+                for i, v in enumerate(objekt)]
+    return objekt
+
+
 def load_spec(path: Path) -> dict:
-    text = path.read_text(encoding="utf-8")
+    """Liest die Spec und loest die Daten-Marker auf.
+
+    Lese- und Syntaxfehler kommen als SchemaError heraus, damit main() sie
+    als Meldung mit Exit 2 melden kann statt als Traceback.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as fehler:
+        raise SchemaError(f"{path} liess sich nicht lesen: "
+                          f"{fehler.strerror}.")
     if path.suffix.lower() in (".yaml", ".yml"):
         ensure_yaml()
         import yaml
-        return yaml.safe_load(text)
-    return json.loads(text)
+        try:
+            spec = yaml.safe_load(text)
+        except yaml.YAMLError as fehler:
+            raise SchemaError(f"{path} ist kein lesbares YAML: {fehler}")
+    else:
+        try:
+            spec = json.loads(text)
+        except json.JSONDecodeError as fehler:
+            raise SchemaError(f"{path} ist kein lesbares JSON: {fehler}")
+    if not isinstance(spec, dict):
+        raise SchemaError(
+            f"{path} enthaelt {type(spec).__name__}, erwartet ist ein "
+            f"Dictionary mit meta und payloads.")
+    return loese_daten_marker(spec, path.resolve().parent)
 
 
 def main():
@@ -908,14 +1048,18 @@ def main():
     if args.manifests:
         manifeste = {"ref": args.manifests_ref, "offline": args.offline}
 
-    spec = load_spec(args.spec)
-    profile, errors = build_profile(
-        spec, branch=args.branch,
-        strict=args.validate_strict,
-        validate=not args.no_validate,
-        offline=args.offline,
-        manifeste=manifeste,
-    )
+    try:
+        spec = load_spec(args.spec)
+        profile, errors = build_profile(
+            spec, branch=args.branch,
+            strict=args.validate_strict,
+            validate=not args.no_validate,
+            offline=args.offline,
+            manifeste=manifeste,
+        )
+    except SchemaError as fehler:
+        print(f"FEHLER: {fehler}", file=sys.stderr)
+        sys.exit(2)
 
     # Wer gegen die zweite Quelle geprueft hat, soll das sehen. Die Angabe
     # steht auf stderr, damit sie eine Pipe auf stdout nicht verschmutzt.

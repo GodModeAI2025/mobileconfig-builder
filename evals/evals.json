@@ -155,6 +155,23 @@
         "--format json emits parseable JSON with level, path and exit code",
         "A file that is not a property list exits 2 without a Python traceback"
       ]
+    },
+    {
+      "id": 10,
+      "prompt": "Ich will ein Zertifikat in mein Profil packen und meine Spec ist JSON. Bisher hiess es, dafuer muss ich YAML schreiben. Geht das jetzt?",
+      "expected_output": "Der Builder loest die Marker {\"__base64__\": \"...\"} und {\"__file__\": \"pfad\"} vor der Validierung im ganzen Spec-Baum in Bytes auf, in beliebiger Tiefe und auch in Listen. Ein relativer Pfad zaehlt vom Verzeichnis der Spec aus. Die Bytes im Profil sind Byte fuer Byte das Dekodierte beziehungsweise der Dateiinhalt. Kaputtes Base64, ein nicht lesbarer Pfad und ein Marker neben einem anderen Key enden mit Exit 2, mit Meldung statt Traceback und ohne Ausgabedatei. Ein nackter Base64-String bleibt eine Zeichenkette und faellt weiter als expected <data>, got str durch.",
+      "files": [],
+      "expectations": [
+        "A JSON spec with a __base64__ marker builds with --validate-strict",
+        "The <data> value in the profile is byte-for-byte the decoded input",
+        "A __file__ marker reads the file next to the spec and yields the same bytes",
+        "Invalid base64 exits 2 with a message and no traceback",
+        "A __file__ path that does not exist exits 2 and names the path",
+        "A marker next to another key is rejected as ambiguous, exit 2",
+        "No output file is left behind by any of the rejected specs",
+        "A plain base64 string is still a string and still fails as expected <data>",
+        "Markers are resolved at any depth, inside dictionaries and inside arrays"
+      ]
     }
   ]
 }

@@ -414,6 +414,100 @@ jobs:
           fi
           echo "OK 7: veraenderte signierte Datei wird abgelehnt"
 
+      # Zertifikats-Payload aus einer JSON-Spec. Bis Welle 7 ging das nicht:
+      # <data> will Bytes, JSON kennt keine, und jeder Zertifikats-Payload
+      # scheiterte an genau dieser Stelle. Das Zertifikat entsteht hier zur
+      # Laufzeit, im Repo liegt keins.
+      - name: Zertifikat aus einer JSON-Spec
+        run: |
+          work="$(mktemp -d)"
+          cd "$work"
+          openssl req -x509 -newkey rsa:2048 -keyout ci.key -out ci.pem \
+            -days 2 -nodes -subj "/CN=CI-Wurzel" 2>/dev/null
+          openssl x509 -in ci.pem -outform der -out ci.der
+
+          build="$GITHUB_WORKSPACE/scripts/build_mobileconfig.py"
+          val="$GITHUB_WORKSPACE/scripts/validate_mobileconfig.py"
+
+          python3 - <<'PY'
+          import base64, json, pathlib
+          roh = pathlib.Path("ci.der").read_bytes()
+          def spec(kennung, inhalt):
+              return {"meta": {"PayloadIdentifier": kennung,
+                               "PayloadDisplayName": "CI-Wurzelzertifikat"},
+                      "payloads": [{"PayloadType": "com.apple.security.root",
+                                    "PayloadCertificateFileName": "ci.cer",
+                                    "PayloadContent": inhalt}]}
+          pathlib.Path("b64.json").write_text(json.dumps(spec(
+              "com.example.ci.cert.b64",
+              {"__base64__": base64.b64encode(roh).decode()})))
+          pathlib.Path("datei.json").write_text(json.dumps(spec(
+              "com.example.ci.cert.datei", {"__file__": "ci.der"})))
+          pathlib.Path("nackt.json").write_text(json.dumps(spec(
+              "com.example.ci.cert.nackt",
+              base64.b64encode(roh).decode())))
+          pathlib.Path("kaputt.json").write_text(json.dumps(spec(
+              "com.example.ci.cert.kaputt",
+              {"__base64__": "kein gueltiges base64!!"})))
+          print("Spec-Dateien geschrieben,", len(roh), "DER-Bytes")
+          PY
+
+          # 1. Beide Marker bauen, und beide tragen dieselben Bytes wie die
+          # DER-Datei. Der Validator aus demselben Repo sieht sich das
+          # Ergebnis danach noch einmal an.
+          for weg in b64 datei; do
+            python3 "$build" "$work/$weg.json" -o "$work/$weg.mobileconfig" \
+              --offline --validate-strict > /dev/null
+            python3 "$val" "$work/$weg.mobileconfig" --offline --strict \
+              > /dev/null
+          done
+          python3 -c "import plistlib,pathlib,sys; \
+            soll=pathlib.Path('ci.der').read_bytes(); \
+            [sys.exit('FEHLER: %s traegt andere Bytes' % w) \
+             for w in ('b64','datei') \
+             if plistlib.load(open(w+'.mobileconfig','rb'))\
+                ['PayloadContent'][0]['PayloadContent'] != soll]; \
+            print('beide Wege tragen', len(soll), 'Bytes, identisch zur DER-Datei')"
+          echo "OK 1: __base64__ und __file__ bauen ein gueltiges" \
+            "Zertifikats-Profil"
+
+          # 2. Ohne Marker bleibt es beim alten Verhalten. Ein nackter
+          # Base64-String ist eine Zeichenkette, und das Schema will Bytes.
+          rc=0
+          python3 "$build" "$work/nackt.json" -o "$work/nackt.mobileconfig" \
+            --offline --validate-strict 2> "$work/nackt.txt" || rc=$?
+          cat "$work/nackt.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet fuer den nackten String, bekommen $rc"
+            exit 1
+          fi
+          if ! grep -q "expected <data>, got str" "$work/nackt.txt"; then
+            echo "FEHLER: die alte Meldung fehlt"
+            exit 1
+          fi
+          echo "OK 2: nackter Base64-String faellt weiter durch"
+
+          # 3. Kaputtes Base64: Meldung mit Exit 2, keine Ausgabedatei, kein
+          # Traceback.
+          rc=0
+          python3 "$build" "$work/kaputt.json" \
+            -o "$work/kaputt.mobileconfig" --offline --validate-strict \
+            2> "$work/kaputt.txt" || rc=$?
+          cat "$work/kaputt.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet, bekommen $rc"
+            exit 1
+          fi
+          if [ -e "$work/kaputt.mobileconfig" ]; then
+            echo "FEHLER: trotz Abbruch wurde eine Datei geschrieben"
+            exit 1
+          fi
+          if grep -q 'Traceback (most recent call last)' "$work/kaputt.txt"; then
+            echo "FEHLER: Absturz statt Meldung"
+            exit 1
+          fi
+          echo "OK 3: kaputtes Base64 endet mit Meldung und Exit 2"
+
       - name: Schema-Inspektion des Wi-Fi-Payloads
         run: |
           out="$(python3 scripts/inspect_payload.py com.apple.wifi.managed \

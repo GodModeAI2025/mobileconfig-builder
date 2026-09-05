@@ -12,6 +12,46 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 
 ### Hinzugefuegt
 
+- **Zertifikate aus einer JSON-Spec.** `{"__base64__": "..."}` und
+  `{"__file__": "ca.der"}` werden vor der Validierung im ganzen Spec-Baum zu
+  Bytes aufgeloest, in beliebiger Tiefe und auch in Listen. Ein relativer
+  Pfad zaehlt vom Verzeichnis der Spec aus, damit dieselbe Spec aus jedem
+  Arbeitsverzeichnis dasselbe Profil ergibt.
+
+  Das schliesst eine Luecke, die jeden Zertifikats-Payload betraf: `<data>`
+  will Bytes, JSON hat keine, und damit scheiterte
+  `com.apple.security.root`, `.pkcs1` und `.pkcs12` aus einer JSON-Spec an
+  genau dieser Stelle, waehrend README und Landingpage
+  Multi-Payload-Profile mit Zertifikaten bewarben. Gemessen an einem frisch
+  erzeugten Wurzelzertifikat: vorher Exit 2 mit `expected <data>, got dict`,
+  jetzt ein Profil, dessen `<data>`-Feld dieselben 781 Bytes traegt wie die
+  DER-Datei, ueber beide Marker.
+
+  Aufgeloest wird unabhaengig davon, was das Schema an der Stelle erwartet.
+  Anders ginge es nicht: die Aufloesung muesste sonst das Schema kennen,
+  bevor die Spec steht. Ein Marker an der falschen Stelle faellt danach als
+  `expected <string>, got bytes` auf.
+
+  Ein nackter Base64-String bleibt eine Zeichenkette und faellt weiter als
+  `expected <data>, got str` durch. Der Marker ersetzt sein ganzes
+  Dictionary, daneben darf kein weiterer Key stehen, und beide Marker
+  zusammen sind ein Abbruch statt einer Ratefrage.
+
+  Nicht abgedeckt: die Marker kopieren Bytes und pruefen nicht, ob dahinter
+  ein Zertifikat steckt. Eine PEM-Datei landet als PEM im Profil, Apple will
+  an einem Zertifikats-Payload DER, umgewandelt wird nicht. `__file__` liest
+  jeden angegebenen Pfad, ohne Groessengrenze, und die Bytes stehen danach im
+  Klartext im Profil.
+- Eval 10 `daten-marker-in-json-spec` und ein CI-Schritt, der sich ein
+  Zertifikat mit `openssl` erzeugt, es ueber beide Marker in ein Profil baut
+  und die Bytes im Profil gegen die DER-Datei haelt. Im Repo liegt weiterhin
+  kein Zertifikat.
+
+- `load_spec` und `build_profile` melden ihre Abbruchgruende jetzt als
+  Meldung mit Exit 2 statt als Traceback. Eine Spec mit kaputtem JSON, ohne
+  `PayloadIdentifier` oder mit leerer `payloads`-Liste lief vorher in einen
+  Stacktrace und Exit 1.
+
 - **Validator fuer bereits vorhandene Profile.**
   `scripts/validate_mobileconfig.py` nimmt eine fertige `.mobileconfig`
   entgegen, egal wer sie gebaut hat, und prueft sie gegen dasselbe Schema,

@@ -103,51 +103,48 @@ everything after the output (transport, MDM import, device install) is outside t
 
 ## Known Gaps
 
-All open in `main` today.
+Every item below was measured against the current `main`, not carried over from an earlier list.
+The closed ones are named at the end, because the paragraphs further up still mention them.
 
-1. **Cleartext leftover after a failed signing run.** Attack path 2. Until it is fixed, run
-   `rm -f *.unsigned.mobileconfig` after a failed attempt and delete the zero byte output file.
-2. **`.gitignore` covers nothing relevant.** One line, `.DS_Store`. Missing: `*.mobileconfig`,
-   `*.unsigned.mobileconfig`, `*.pem`, `*.key`, `*.p12`, `__pycache__`. Cheapest gap in this list,
-   still open.
-3. **`--validate-strict` does not look at the top level.** `build_profile`
-   (`build_mobileconfig.py:222-280`) validates only the entries in `PayloadContent`; `meta` is
-   copied through unchecked at line 278, and `TopLevel.yaml` is never loaded. Verified: a spec with
-   an invented `TotallyMadeUpKey`, `ConsentText` as an integer (schema: `<dictionary>`) and
-   `PayloadRemovalDisallowed` as a string (schema: `<boolean>`) exits 0 and writes all three into
-   the profile.
-4. **Seven payload types disable the unknown-key check.** `_check_keys` skips that branch when the
-   schema declares an `ANY` key (`build_mobileconfig.py:153`, `170`). In the release branch that is
-   the seven `com.apple.*ethernet*.managed` schemas, where unknown keys pass without complaint.
-5. **Two payload types collide and the two scripts disagree.** Apple's release branch ships 127 YAML
-   files for 121 payload types; `com.apple.MCX` appears in 6 of them, `com.apple.extensiblesso` in
-   2. `inspect_payload.py:31-41` returns the first match, `load_all_schemas`
-   (`build_mobileconfig.py:61-81`) overwrites until the last one wins. Verified:
-   `inspect_payload.py com.apple.MCX` documents `EnableGuestAccount` from
-   `com.apple.MCX(Accounts).yaml`, a build with that key fails with
-   `unknown key 'EnableGuestAccount'` because validation ran against `com.apple.MCX(WiFi).yaml`.
-   Hits FileVault and Kerberos SSO. `references/payload-cheatsheet.md:106` names it, the code does
-   not handle it.
-6. **Output files get default permissions.** `plistlib.dump` into a plain `open(..., "wb")`
-   (`build_mobileconfig.py:362-363`, `371-372`), no chmod. Measured: 0644 for a profile holding a
-   WPA passphrase, readable by everyone on a shared machine.
-7. **Validation errors echo the offending value.** `build_mobileconfig.py:115` and `:130` print
+1. **Seven payload types disable the unknown-key check.** `_check_keys` skips that branch when the
+   schema declares an `ANY` key. Counted against the pinned release branch: 121 payload types, of
+   which exactly seven carry such a key, all of them `com.apple.*ethernet*.managed`. Unknown keys
+   pass there without complaint, in the build and in `validate_mobileconfig.py` alike.
+2. **The unsigned output file gets default permissions.** `build_mobileconfig.py:1131` writes the
+   profile with `write_bytes` and no chmod. Measured: 0644 for a profile holding a WPA passphrase,
+   readable by everyone on a shared machine. The signed path is different, it sets the mode on its
+   temporary file before the content goes in.
+3. **Validation errors echo the offending value.** `build_mobileconfig.py:141` and `:156` print
    `value {value!r}` on rangelist and regex mismatches. No password key in the current Apple schema
    carries such a constraint, so no leak is known today, but the code has no notion of a secret key
    and the message lands in stderr and in any CI log.
-8. **`ensure_yaml()` installs a package on its own.** `fetch_schema.py:30-38` runs
-   `pip install --quiet --break-system-packages pyyaml` on first use, unpinned and without hash
-   check. On the macOS system Python 3.9 that pip rejects the flag and the script dies with a
-   traceback. Install PyYAML yourself beforehand.
-9. **The schema cache never expires and is never checked.** Attack path 3, `--refresh` is manual.
-10. **`_SCHEMA_CACHE` has no branch key.** The global at `build_mobileconfig.py:58` is filled once,
-    `load_all_schemas` returns it for any branch (line 65), and `get_schema` (85-86) drops the
-    offline flag. The CLI masks this via the preload at line 228, a direct import does not.
-11. **The shipped examples contain plausible cleartext passwords.**
-    `assets/examples/wifi_guest.json:17`, `assets/examples/classroom_ipad.json:17`. Fine as demo
-    values, dangerous as a copy template, because a copy keeps the README output path.
-12. **No way to check an existing profile.** Validation happens only while building from a spec.
-    Nothing reads a `.mobileconfig` back in, verifies its signature, or scans it for secrets.
+4. **`ensure_yaml()` installs a package on its own.** It runs `pip install --quiet pyyaml` on first
+   use and retries with `--break-system-packages`, unpinned and without a hash check. Install
+   PyYAML yourself beforehand if that is not acceptable.
+5. **The schema cache never expires and is never checked.** Attack path 3, `--refresh` is manual.
+   `get_schema` takes no offline flag either: it uses what is remembered for the branch and goes to
+   the network otherwise. Call `load_all_schemas(branch, offline=True)` first if a run must stay
+   off the network.
+6. **The shipped examples contain plausible cleartext passwords.**
+   `assets/examples/wifi_guest.json:17`, `assets/examples/classroom_ipad.json:17`. Fine as demo
+   values, dangerous as a copy template, because a copy keeps the README output path.
+7. **`__file__` in a spec reads any path the process can read.** The marker takes the bytes as they
+   are, with no allowlist and no size limit, and they end up in the profile in cleartext. A spec
+   somebody else wrote deserves a look at its `__file__` entries before you build it.
+8. **The validator does not say who signed a profile.** `validate_mobileconfig.py` unpacks a PKCS#7
+   container with `openssl smime -verify -noverify`, which checks the signature but skips the
+   certificate chain. A valid signature from an issuer nobody trusts passes. Nothing scans a
+   finished profile for secrets either; `tools/scan_secrets.py` looks at the repository, not at a
+   profile you hand it.
+
+Closed since this list was first written, and named here because the sections above still refer to
+them: the cleartext `.unsigned.mobileconfig` left behind by a failed signing run, which no longer
+touches the disk at all because the profile goes to the signing tool through stdin; a `.gitignore`
+that covered only `.DS_Store`; `--validate-strict` ignoring the top level, which is now checked
+against `TopLevel.yaml`; the colliding payload types that build and inspect resolved in opposite
+directions, where the schema loader now merges the files and a key counts as required only when
+every file demands it; `_SCHEMA_CACHE` without a branch key; and the missing way to check a profile
+that already exists.
 
 ## What This Project Does Not Do
 

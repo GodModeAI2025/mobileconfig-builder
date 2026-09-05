@@ -10,6 +10,28 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 
 ## [Unreleased]
 
+### Geaendert
+
+- `load_spec` und `build_profile` melden ihre Abbruchgruende jetzt als
+  Meldung mit Exit 2 statt als Traceback. Eine Spec mit kaputtem JSON, ohne
+  `PayloadIdentifier` oder mit leerer `payloads`-Liste lief vorher in einen
+  Stacktrace und Exit 1.
+- `_SCHEMA_CACHE` merkt sich das Schema jetzt je Branch. Vorher lag dort ein
+  einziges Dict ohne Branch-Schluessel, und der erste Lauf legte fest, was
+  jeder weitere sah. Ueber die CLI fiel das nicht auf, ein Aufruf benutzt
+  genau einen Branch. Als Bibliotheksaufruf schon: gemessen am Stand davor
+  lieferte `load_all_schemas('seed_OS_27_0', offline=True)` nach einem
+  vorherigen `release`-Aufruf dasselbe Objekt mit 121 PayloadTypes zurueck,
+  ohne Hinweis. Jetzt meldet derselbe Aufruf, dass fuer diesen Branch kein
+  Cache da ist.
+- `build_profile` arbeitet auf einer Kopie der uebergebenen Payload-Dicts.
+  Vorher schrieb es `PayloadUUID`, `PayloadIdentifier` und `PayloadVersion`
+  in die Spec des Aufrufers zurueck, was fuer eine Bibliothek niemand
+  erwartet. Am erzeugten Profil aendert sich nichts: dieselbe Spec ergibt
+  Byte fuer Byte dieselbe Datei.
+- `validate_mobileconfig.py` weist wie der Bau-Pfad aus, welche Payloads
+  gegen ProfileManifests statt gegen Apples Schema geprueft wurden.
+
 ### Hinzugefuegt
 
 - **Zertifikate aus einer JSON-Spec.** `{"__base64__": "..."}` und
@@ -40,17 +62,15 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   Nicht abgedeckt: die Marker kopieren Bytes und pruefen nicht, ob dahinter
   ein Zertifikat steckt. Eine PEM-Datei landet als PEM im Profil, Apple will
   an einem Zertifikats-Payload DER, umgewandelt wird nicht. `__file__` liest
-  jeden angegebenen Pfad, ohne Groessengrenze, und die Bytes stehen danach im
-  Klartext im Profil.
+  jeden Pfad, den der aufrufende Prozess lesen darf, ohne Groessengrenze und
+  ohne Erlaubnisliste, `~` eingeschlossen, und die Bytes stehen danach im
+  Klartext im Profil. Eine Spec ist damit so vertrauenswuerdig wie ihre
+  Quelle. README, SKILL.md und `references/data-fields.md` sagen das an der
+  Stelle, an der jemand den Marker nachschlaegt.
 - Eval 10 `daten-marker-in-json-spec` und ein CI-Schritt, der sich ein
   Zertifikat mit `openssl` erzeugt, es ueber beide Marker in ein Profil baut
   und die Bytes im Profil gegen die DER-Datei haelt. Im Repo liegt weiterhin
   kein Zertifikat.
-
-- `load_spec` und `build_profile` melden ihre Abbruchgruende jetzt als
-  Meldung mit Exit 2 statt als Traceback. Eine Spec mit kaputtem JSON, ohne
-  `PayloadIdentifier` oder mit leerer `payloads`-Liste lief vorher in einen
-  Stacktrace und Exit 1.
 
 - **Validator fuer bereits vorhandene Profile.**
   `scripts/validate_mobileconfig.py` nimmt eine fertige `.mobileconfig`

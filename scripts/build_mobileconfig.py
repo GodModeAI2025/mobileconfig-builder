@@ -67,22 +67,33 @@ class SchemaError(Exception):
 # ─────────────────────────────────────────────────────────────────────────────
 # Schema lookup
 # ─────────────────────────────────────────────────────────────────────────────
-_SCHEMA_CACHE: dict[str, dict] = {}
+# branch → (payloadtype → Schema). Der Schlüssel ist die Korrektur: vorher
+# lag hier ein einziges Dict ohne Branch, und der erste Lauf legte fest, was
+# jeder weitere zu sehen bekam. Über die CLI fiel das nie auf, weil ein
+# Aufruf genau einen Branch benutzt. Als Bibliotheksaufruf schon: wer
+# nacheinander gegen `release` und gegen einen Seed-Branch prüfte, bekam
+# beim zweiten Mal die Schemas des ersten, ohne Hinweis.
+_SCHEMA_CACHE: dict[str, dict[str, dict]] = {}
 
 
 def load_all_schemas(branch: str, refresh: bool = False,
                      offline: bool = False) -> dict[str, dict]:
-    """payloadtype → Schema-Dokument.
+    """payloadtype → Schema-Dokument, je Branch gemerkt.
 
     Die Auflösung mehrfach vergebener payloadtypes liegt in
     fetch_schema.load_schema_map, damit inspect_payload.py und dieses
     Skript garantiert dasselbe Schema sehen.
+
+    `offline` wirkt nur, solange der Branch noch nicht gemerkt ist. Wer
+    sicher ohne Netz arbeiten will, ruft diese Funktion einmal selbst auf,
+    bevor er `get_schema` oder `validate_payload` benutzt: die reichen kein
+    offline-Flag durch.
     """
-    global _SCHEMA_CACHE
-    if _SCHEMA_CACHE and not refresh:
-        return _SCHEMA_CACHE
-    _SCHEMA_CACHE = load_schema_map(branch, refresh=refresh, offline=offline)
-    return _SCHEMA_CACHE
+    if branch in _SCHEMA_CACHE and not refresh:
+        return _SCHEMA_CACHE[branch]
+    _SCHEMA_CACHE[branch] = load_schema_map(branch, refresh=refresh,
+                                            offline=offline)
+    return _SCHEMA_CACHE[branch]
 
 
 def get_schema(payloadtype: str, branch: str,
@@ -324,6 +335,10 @@ def build_profile(spec: dict, branch: str = "release",
         if not ptype:
             all_errors.append(f"payloads[{i}]: missing PayloadType")
             continue
+        # Auf einer Kopie arbeiten. Die Ergänzungen unten gehören ins
+        # Ergebnis, nicht in die Spec des Aufrufers: als Bibliotheksaufruf
+        # bekäme der sonst sein eigenes Eingabe-Dict mit fremden Keys zurück.
+        p = dict(p)
         # Auto-fill the common keys (CommonPayloadKeys.yaml)
         p.setdefault("PayloadVersion", 1)
         p.setdefault(

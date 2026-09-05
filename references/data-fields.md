@@ -91,6 +91,13 @@ und private Schlüssel gilt derselbe Satz wie überall in diesem Repo: ein
 unverschlüsseltes Profil ist kein Ort für Geheimnisse, die niemand sehen
 soll.
 
+Gelesen wird jeder Pfad, den der aufrufende Prozess lesen darf. `~` wird
+aufgelöst, ein absoluter Pfad bleibt stehen, und eine Erlaubnisliste gibt es
+nicht. Eine Spec ist damit so vertrauenswürdig wie ihre Quelle: eine Spec,
+die jemand anders geschrieben hat, gehört vor dem Build auf `__file__`
+durchgesehen, sonst holt sie mit `{"__file__": "~/.ssh/id_rsa"}` eine Datei
+ins Profil, die dort nichts verloren hat.
+
 ## Prüfen, was herausgekommen ist
 
 ```bash

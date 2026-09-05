@@ -222,13 +222,21 @@ def _pruefe_uuids(profil: dict, payloads: list) -> list[dict]:
 
 
 def pruefe_profil(profil: dict, branch: str = "release",
-                  manifeste: dict | None = None) -> list[dict]:
-    """Alle Befunde zu einem geladenen Profil, jeweils mit Stufe und Pfad.
+                  manifeste: dict | None = None
+                  ) -> tuple[list[dict], list[str]]:
+    """(Befunde, PayloadTypes aus ProfileManifests) zu einem Profil.
 
     Die Einstufung passiert hier und nicht erst in der Ausgabe: `--strict`
     verschiebt nur die Grenze, nicht die Befunde.
+
+    Die zweite Liste sagt, welche Payloads nicht gegen Apples Schema
+    geprueft wurden. Ohne die Angabe stuende am Ende ein sauberes Ergebnis
+    da, ohne dass jemand erfaehrt, dass die Regel dafuer aus einer
+    Community-Sammlung ohne Lizenzangabe stammt. `build_mobileconfig.py`
+    sagt dasselbe beim Bauen.
     """
     befunde: list[dict] = []
+    aus_manifest: list[str] = []
 
     lax = validate_top_level(profil, branch, strict=False)
     streng = validate_top_level(profil, branch, strict=True)
@@ -262,7 +270,11 @@ def pruefe_profil(profil: dict, branch: str = "release",
         if not isinstance(ptype, str) or not ptype:
             befunde.append(_befund(FEHLER, pfad, "PayloadType fehlt"))
             continue
-        if get_schema(ptype, branch, manifeste=manifeste) is None:
+        schema = get_schema(ptype, branch, manifeste=manifeste)
+        if isinstance(schema, dict) \
+                and schema.get("_origin") == "ProfileManifests":
+            aus_manifest.append(ptype)
+        if schema is None:
             hinweis = ""
             if manifeste is None and not ptype.startswith("com.apple."):
                 hinweis = (", Apples Schema beschreibt nur Apple-Domains; "
@@ -282,7 +294,7 @@ def pruefe_profil(profil: dict, branch: str = "release",
             befunde.append(_befund(WARNUNG, pfad, text))
 
     befunde += _pruefe_uuids(profil, payloads)
-    return befunde
+    return befunde, sorted(set(aus_manifest))
 
 
 def pruefe_datei(pfad: Path, branch: str, manifeste: dict | None,
@@ -293,6 +305,7 @@ def pruefe_datei(pfad: Path, branch: str, manifeste: dict | None,
         "form": None,
         "payloads": 0,
         "befunde": [],
+        "aus_manifest": [],
     }
     try:
         profil, form = lade_profil(pfad)
@@ -302,8 +315,8 @@ def pruefe_datei(pfad: Path, branch: str, manifeste: dict | None,
     ergebnis["form"] = form
     inhalt = profil.get("PayloadContent")
     ergebnis["payloads"] = len(inhalt) if isinstance(inhalt, list) else 0
-    ergebnis["befunde"] = pruefe_profil(profil, branch=branch,
-                                        manifeste=manifeste)
+    ergebnis["befunde"], ergebnis["aus_manifest"] = pruefe_profil(
+        profil, branch=branch, manifeste=manifeste)
     return ergebnis
 
 
@@ -326,6 +339,13 @@ def _bericht_text(ergebnisse: list[dict], strict: bool) -> str:
         if e["form"]:
             kopf += f": {e['form']}, {e['payloads']} Payload(s)"
         zeilen.append(kopf)
+        if e["aus_manifest"]:
+            zeilen.append(
+                "  Hinweis: geprueft gegen ProfileManifests statt gegen "
+                "Apples Schema: " + ", ".join(e["aus_manifest"]))
+            zeilen.append(
+                "  Die Sammlung ist von Mac-Admins gepflegt, nicht von "
+                "Apple, und hat keine Lizenzangabe.")
         if not e["befunde"]:
             zeilen.append("  keine Befunde")
             continue
@@ -352,6 +372,7 @@ def _bericht_json(ergebnisse: list[dict], strict: bool, code: int) -> str:
                 "datei": e["datei"],
                 "form": e["form"],
                 "payloads": e["payloads"],
+                "aus_manifest": e["aus_manifest"],
                 "befunde": [
                     {
                         "stufe": (FEHLER if strict else b["stufe"]).lower(),

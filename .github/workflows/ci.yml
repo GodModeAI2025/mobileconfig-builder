@@ -575,6 +575,27 @@ jobs:
             exit 1
           fi
 
+          # Der Validator kennt dieselbe zweite Quelle. Ohne diese Zeilen
+          # waere sein --manifests-Flag dokumentiert und ungemessen.
+          python3 scripts/validate_mobileconfig.py "$work/mit.mobileconfig" \
+            --strict --manifests --manifests-ref "$MANIFESTS_SHA" \
+            > "$work/val_mit.txt"
+          cat "$work/val_mit.txt"
+          if ! grep -q 'ProfileManifests' "$work/val_mit.txt"; then
+            echo "FEHLER: der Validator weist die Herkunft nicht aus, und ein"
+            echo "sauberes Ergebnis ohne diese Angabe verschweigt, nach"
+            echo "wessen Regel geprueft wurde"
+            exit 1
+          fi
+          rc=0
+          python3 scripts/validate_mobileconfig.py "$work/mit.mobileconfig" \
+            --offline --strict > "$work/ohne_quelle.txt" || rc=$?
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: ohne --manifests war Exit 2 erwartet, bekommen $rc"
+            cat "$work/ohne_quelle.txt"
+            exit 1
+          fi
+
           # Erfundener Chrome-Key faellt auch mit der zweiten Quelle durch.
           cat > "$work/bad.json" <<'JSON'
           {

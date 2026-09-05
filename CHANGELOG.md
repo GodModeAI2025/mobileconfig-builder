@@ -10,7 +10,117 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 
 ## [Unreleased]
 
+### Geaendert
+
+- `load_spec` und `build_profile` melden ihre Abbruchgruende jetzt als
+  Meldung mit Exit 2 statt als Traceback. Eine Spec mit kaputtem JSON, ohne
+  `PayloadIdentifier` oder mit leerer `payloads`-Liste lief vorher in einen
+  Stacktrace und Exit 1.
+- `_SCHEMA_CACHE` merkt sich das Schema jetzt je Branch. Vorher lag dort ein
+  einziges Dict ohne Branch-Schluessel, und der erste Lauf legte fest, was
+  jeder weitere sah. Ueber die CLI fiel das nicht auf, ein Aufruf benutzt
+  genau einen Branch. Als Bibliotheksaufruf schon: gemessen am Stand davor
+  lieferte `load_all_schemas('seed_OS_27_0', offline=True)` nach einem
+  vorherigen `release`-Aufruf dasselbe Objekt mit 121 PayloadTypes zurueck,
+  ohne Hinweis. Jetzt meldet derselbe Aufruf, dass fuer diesen Branch kein
+  Cache da ist.
+- `build_profile` arbeitet auf einer Kopie der uebergebenen Payload-Dicts.
+  Vorher schrieb es `PayloadUUID`, `PayloadIdentifier` und `PayloadVersion`
+  in die Spec des Aufrufers zurueck, was fuer eine Bibliothek niemand
+  erwartet. Am erzeugten Profil aendert sich nichts: dieselbe Spec ergibt
+  Byte fuer Byte dieselbe Datei.
+- `validate_mobileconfig.py` weist wie der Bau-Pfad aus, welche Payloads
+  gegen ProfileManifests statt gegen Apples Schema geprueft wurden.
+
 ### Hinzugefuegt
+
+- **Zertifikate aus einer JSON-Spec.** `{"__base64__": "..."}` und
+  `{"__file__": "ca.der"}` werden vor der Validierung im ganzen Spec-Baum zu
+  Bytes aufgeloest, in beliebiger Tiefe und auch in Listen. Ein relativer
+  Pfad zaehlt vom Verzeichnis der Spec aus, damit dieselbe Spec aus jedem
+  Arbeitsverzeichnis dasselbe Profil ergibt.
+
+  Das schliesst eine Luecke, die jeden Zertifikats-Payload betraf: `<data>`
+  will Bytes, JSON hat keine, und damit scheiterte
+  `com.apple.security.root`, `.pkcs1` und `.pkcs12` aus einer JSON-Spec an
+  genau dieser Stelle, waehrend README und Landingpage
+  Multi-Payload-Profile mit Zertifikaten bewarben. Gemessen an einem frisch
+  erzeugten Wurzelzertifikat: vorher Exit 2 mit `expected <data>, got dict`,
+  jetzt ein Profil, dessen `<data>`-Feld dieselben 781 Bytes traegt wie die
+  DER-Datei, ueber beide Marker.
+
+  Aufgeloest wird unabhaengig davon, was das Schema an der Stelle erwartet.
+  Anders ginge es nicht: die Aufloesung muesste sonst das Schema kennen,
+  bevor die Spec steht. Ein Marker an der falschen Stelle faellt danach als
+  `expected <string>, got bytes` auf.
+
+  Ein nackter Base64-String bleibt eine Zeichenkette und faellt weiter als
+  `expected <data>, got str` durch. Der Marker ersetzt sein ganzes
+  Dictionary, daneben darf kein weiterer Key stehen, und beide Marker
+  zusammen sind ein Abbruch statt einer Ratefrage.
+
+  Nicht abgedeckt: die Marker kopieren Bytes und pruefen nicht, ob dahinter
+  ein Zertifikat steckt. Eine PEM-Datei landet als PEM im Profil, Apple will
+  an einem Zertifikats-Payload DER, umgewandelt wird nicht. `__file__` liest
+  jeden Pfad, den der aufrufende Prozess lesen darf, ohne Groessengrenze und
+  ohne Erlaubnisliste, `~` eingeschlossen, und die Bytes stehen danach im
+  Klartext im Profil. Eine Spec ist damit so vertrauenswuerdig wie ihre
+  Quelle. README, SKILL.md und `references/data-fields.md` sagen das an der
+  Stelle, an der jemand den Marker nachschlaegt.
+- Eval 10 `daten-marker-in-json-spec` und ein CI-Schritt, der sich ein
+  Zertifikat mit `openssl` erzeugt, es ueber beide Marker in ein Profil baut
+  und die Bytes im Profil gegen die DER-Datei haelt. Im Repo liegt weiterhin
+  kein Zertifikat.
+
+- **Validator fuer bereits vorhandene Profile.**
+  `scripts/validate_mobileconfig.py` nimmt eine fertige `.mobileconfig`
+  entgegen, egal wer sie gebaut hat, und prueft sie gegen dasselbe Schema,
+  gegen das der Bau-Pfad prueft: die Profil-Ebene gegen `TopLevel.yaml`,
+  jeden Eintrag aus `PayloadContent` gegen sein eigenes Schema. Bis hierher
+  konnte das Werkzeug nur pruefen, was es selbst erzeugt hatte; ein Profil
+  aus Jamf oder Intune liess sich nicht vorlegen.
+
+  Drei Eingabeformen: XML-Plist, Binaer-Plist und signierter
+  PKCS#7-Container, letzterer ueber `openssl smime -verify -noverify`
+  ausgepackt. `-noverify` laesst die Zertifikatskette ungeprueft, die
+  Signatur nicht: eine nachtraeglich veraenderte Datei faellt durch, ein
+  gueltig signiertes Profil eines Ausstellers, dem niemand vertraut, geht
+  durch. Wem ein Profil gehoert, sagt der Validator also nicht.
+
+  Zwei Stufen mit einer Regel dahinter. **Fehler** heisst, das Schema wird
+  verletzt: Pflichtkey fehlt, Typ passt nicht, Wert liegt ausserhalb von
+  `rangelist` oder `range`. **Warnung** heisst, Apples Schema sagt dazu
+  nichts oder es gibt keins: unbekannter Key, PayloadType ohne Schema,
+  `format`-Regex, doppelt vergebene `PayloadUUID`. Exit 2 fuer Fehler, 1 fuer
+  reine Warnungen, 0 fuer nichts. `--strict` macht aus jeder Warnung einen
+  Fehler.
+
+  Die Trennung ist der Grund, warum das Werkzeug auf fremden Dateien
+  brauchbar bleibt: ein Profil aus einem realen MDM traegt regelmaessig Keys,
+  die Apple nie beschrieben hat, und Payloads von Anbietern, fuer die Apple
+  gar kein Schema hat. Gemessen an einem von Hand gebauten Jamf-Export mit
+  `PayloadEnabled` auf oberster Ebene, einem `JamfInternalKey` im
+  Restrictions-Payload und einem `com.google.Chrome`-Payload: drei Warnungen,
+  kein Fehler, Exit 1. Als Fehler gewertet waere dieselbe Datei rot, ohne
+  dass etwas an ihr falsch waere.
+
+  Jeder Befund nennt seinen Pfad (`top-level`, `PayloadContent[0]`),
+  `--format json` gibt dieselben Befunde maschinenlesbar aus, und mehrere
+  Dateien in einem Aufruf sind erlaubt.
+
+  Nicht abgedeckt: `supportedOS` wird nicht ausgewertet, ein iOS-only-Key in
+  einem macOS-Profil laeuft durch. Verschluesselte Payloads bleiben zu,
+  `EncryptedPayloadContent` ist `<data>` und wird nicht ausgepackt. Es gibt
+  kein SARIF, also landen die Befunde nicht in GitHub Code Scanning, und es
+  gibt keine fertige GitHub Action; der README-Abschnitt zeigt den direkten
+  Aufruf.
+- Eval 9 `validate-mobileconfig` und ein CI-Schritt, der den Validator von
+  aussen faehrt: gebautes Profil Exit 0, erfundener Key Warnung mit Exit 1 und
+  strikt Fehler mit Exit 2, `rangelist`-Verstoss Exit 2 auch ohne `--strict`,
+  JSON-Ausgabe mit Stufe und Pfad, keine Plist Exit 2 ohne Traceback. Der
+  Signier-Schritt reicht seine eigene signierte Ausgabe an den Validator
+  weiter und danach dieselbe Datei mit einem geaenderten Byte, weil dort der
+  einzige PKCS#7-Container dieser CI entsteht.
 
 - **Signieren ueber den macOS-Schluesselbund.** `--sign-identity <Name oder
   SHA-1>` signiert mit `/usr/bin/security cms -S` statt mit `openssl`. Der

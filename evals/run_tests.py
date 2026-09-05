@@ -16,6 +16,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import base64
 import json
 import plistlib
 import re
@@ -672,6 +673,267 @@ def test_eval_8_profilemanifests_normalisierung(workdir: Path) -> TestCase:
     return tc
 
 
+def run_validate(pfade, *, strict: bool = False,
+                 zusatz: list[str] | None = None
+                 ) -> subprocess.CompletedProcess:
+    cmd = [sys.executable, str(SCRIPTS / "validate_mobileconfig.py")]
+    cmd += [str(p) for p in pfade]
+    cmd.append("--offline")
+    if strict:
+        cmd.append("--strict")
+    cmd += zusatz or []
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+
+def test_eval_9_validate_mobileconfig(workdir: Path) -> TestCase:
+    tc = TestCase(9, "validate-mobileconfig")
+    arbeit = workdir / "eval9"
+    arbeit.mkdir(exist_ok=True)
+
+    gut = arbeit / "gut.mobileconfig"
+    bau = run_build(ASSETS / "examples" / "classroom_ipad.json", gut,
+                    strict=True)
+    if bau.returncode != 0 or not gut.exists():
+        tc.check("Build of the reference profile succeeds", False,
+                 dim(bau.stderr[:300]))
+        return tc
+
+    proc = run_validate([gut])
+    tc.check("A profile this tool built validates with exit code 0",
+             proc.returncode == 0, dim(proc.stdout[:300]))
+
+    # Erfundener Payload-Key: Apples Schema sagt dazu nichts, also Warnung.
+    erfunden = arbeit / "erfunden.mobileconfig"
+    profil = load_plist(gut)
+    profil["PayloadContent"][0]["GibtEsNichtKey"] = "irgendwas"
+    with erfunden.open("wb") as fh:
+        plistlib.dump(profil, fh)
+
+    lax = run_validate([erfunden])
+    tc.check("An invented payload key is a warning and exits 1 by default",
+             lax.returncode == 1 and "WARNUNG" in lax.stdout,
+             f"returncode={lax.returncode}: {dim(lax.stdout[:300])}")
+
+    streng = run_validate([erfunden], strict=True)
+    tc.check("The same key becomes an error and exits 2 with --strict",
+             streng.returncode == 2 and "FEHLER" in streng.stdout,
+             f"returncode={streng.returncode}: {dim(streng.stdout[:300])}")
+
+    tc.check("The finding names the key and the path PayloadContent[0]",
+             "GibtEsNichtKey" in lax.stdout
+             and "PayloadContent[0]" in lax.stdout,
+             dim(lax.stdout[:300]))
+
+    # Wert ausserhalb der rangelist: das Schema wird verletzt, also Fehler,
+    # und zwar auch ohne --strict.
+    verletzt = arbeit / "verletzt.mobileconfig"
+    profil = load_plist(gut)
+    profil["PayloadContent"][0]["EncryptionType"] = "SUPERWPA"
+    with verletzt.open("wb") as fh:
+        plistlib.dump(profil, fh)
+    schema_bruch = run_validate([verletzt])
+    tc.check("A value outside the range list is an error and exits 2 "
+             "without --strict",
+             schema_bruch.returncode == 2
+             and "SUPERWPA" in schema_bruch.stdout,
+             f"returncode={schema_bruch.returncode}: "
+             f"{dim(schema_bruch.stdout[:300])}")
+
+    # Erfundener Top-Level-Key: gehoert unter top-level, nicht unter einen
+    # Payload. Das ist genau die Verwechslung, die Eval 6 fuer den Bau-Pfad
+    # ausschliesst.
+    obenauf = arbeit / "obenauf.mobileconfig"
+    profil = load_plist(gut)
+    profil["TotallyMadeUpKey"] = "nope"
+    with obenauf.open("wb") as fh:
+        plistlib.dump(profil, fh)
+    oben = run_validate([obenauf])
+    zeilen = [z for z in oben.stdout.splitlines()
+              if "TotallyMadeUpKey" in z]
+    tc.check("An invented top-level key is reported under top-level, "
+             "not under a payload",
+             len(zeilen) == 1 and "top-level" in zeilen[0]
+             and "PayloadContent[" not in zeilen[0],
+             dim(str(zeilen)[:300]))
+
+    # PayloadType ohne Schema: ungeprueft statt falsch geprueft.
+    fremd = arbeit / "fremd.mobileconfig"
+    profil = load_plist(gut)
+    profil["PayloadContent"].append({
+        "PayloadType": "com.google.Chrome",
+        "PayloadVersion": 1,
+        "PayloadIdentifier": "com.example.classroom.ipad.chrome",
+        "PayloadUUID": "1cb1e0f4-4a2a-4a1e-9a3d-0b6d5b2f0e11",
+        "PayloadDisplayName": "Chrome",
+    })
+    with fremd.open("wb") as fh:
+        plistlib.dump(profil, fh)
+    ohne_schema = run_validate([fremd])
+    tc.check("A payload type without a schema is reported as unchecked, "
+             "not as an error",
+             ohne_schema.returncode == 1
+             and "com.google.Chrome" in ohne_schema.stdout
+             and "nicht geprueft" in ohne_schema.stdout,
+             f"returncode={ohne_schema.returncode}: "
+             f"{dim(ohne_schema.stdout[:300])}")
+
+    als_json = run_validate([verletzt], zusatz=["--format", "json"])
+    try:
+        daten = json.loads(als_json.stdout)
+        befunde = daten["dateien"][0]["befunde"]
+        json_ok = (daten["exit_code"] == 2
+                   and als_json.returncode == 2
+                   and befunde
+                   and all({"stufe", "pfad", "text"} <= set(b) for b in befunde))
+        json_detail = ""
+    except (ValueError, KeyError, IndexError) as fehler:
+        json_ok = False
+        json_detail = f"{type(fehler).__name__}: {fehler}"
+    tc.check("--format json emits parseable JSON with level, path and "
+             "exit code", json_ok, dim(json_detail or als_json.stdout[:200]))
+
+    # Keine Plist: Meldung statt Traceback.
+    mist = arbeit / "keine-plist.mobileconfig"
+    mist.write_text("das ist kein Profil\n", encoding="utf-8")
+    kein_profil = run_validate([mist])
+    tc.check("A file that is not a property list exits 2 without a traceback",
+             kein_profil.returncode == 2
+             and "Traceback (most recent call last)" not in kein_profil.stderr
+             and "Traceback (most recent call last)" not in kein_profil.stdout,
+             f"returncode={kein_profil.returncode}: "
+             f"{dim(kein_profil.stdout[:200])}")
+    return tc
+
+
+# Der Inhalt ist beliebig: das Schema prueft an einem <data>-Key den Typ,
+# nicht die Struktur der Bytes. Ein echtes Zertifikat waere hier nur ein
+# zweiter Grund, warum der Test scheitern kann, und im Repo darf ohnehin
+# keins liegen. Der CI-Schritt nimmt dafuer ein frisch erzeugtes.
+EVAL_DATEN = bytes(range(256)) * 3
+
+
+def _daten_spec(identifier: str, inhalt) -> dict:
+    return {
+        "meta": {"PayloadIdentifier": identifier},
+        "payloads": [{
+            "PayloadType": "com.apple.security.root",
+            "PayloadCertificateFileName": "test.cer",
+            "PayloadContent": inhalt,
+        }],
+    }
+
+
+def test_eval_10_daten_marker(workdir: Path) -> TestCase:
+    tc = TestCase(10, "daten-marker-in-json-spec")
+    arbeit = workdir / "eval10"
+    arbeit.mkdir(exist_ok=True)
+    (arbeit / "zertifikat.der").write_bytes(EVAL_DATEN)
+    base64_text = base64.b64encode(EVAL_DATEN).decode()
+
+    b64_spec = arbeit / "b64.json"
+    b64_spec.write_text(json.dumps(_daten_spec(
+        "com.example.eval10.b64", {"__base64__": base64_text})))
+    b64_out = arbeit / "b64.mobileconfig"
+    proc = run_build(b64_spec, b64_out, strict=True)
+    tc.check("A JSON spec with a __base64__ marker builds with "
+             "--validate-strict",
+             proc.returncode == 0 and b64_out.exists(),
+             f"returncode={proc.returncode}: {dim(proc.stderr[:300])}")
+
+    aus_profil = None
+    if b64_out.exists():
+        aus_profil = load_plist(b64_out)["PayloadContent"][0]["PayloadContent"]
+    tc.check("The <data> value in the profile is byte-for-byte the decoded "
+             "input",
+             isinstance(aus_profil, bytes) and aus_profil == EVAL_DATEN,
+             f"typ={type(aus_profil).__name__}")
+
+    # Der Pfad zaehlt vom Verzeichnis der Spec aus, deshalb steht hier nur
+    # der Dateiname und der Build laeuft trotzdem aus dem Repo-Wurzel.
+    datei_spec = arbeit / "datei.json"
+    datei_spec.write_text(json.dumps(_daten_spec(
+        "com.example.eval10.datei", {"__file__": "zertifikat.der"})))
+    datei_out = arbeit / "datei.mobileconfig"
+    proc = run_build(datei_spec, datei_out, strict=True)
+    gleich = False
+    if datei_out.exists():
+        gleich = (load_plist(datei_out)["PayloadContent"][0]["PayloadContent"]
+                  == EVAL_DATEN)
+    tc.check("A __file__ marker reads the file next to the spec and yields "
+             "the same bytes",
+             proc.returncode == 0 and gleich,
+             f"returncode={proc.returncode}: {dim(proc.stderr[:300])}")
+
+    def scheitert(name: str, inhalt) -> subprocess.CompletedProcess:
+        spec = arbeit / f"{name}.json"
+        spec.write_text(json.dumps(_daten_spec(
+            f"com.example.eval10.{name}", inhalt)))
+        ziel = arbeit / f"{name}.mobileconfig"
+        if ziel.exists():
+            ziel.unlink()
+        ergebnis = run_build(spec, ziel, strict=True)
+        ergebnis.ziel = ziel  # type: ignore[attr-defined]
+        return ergebnis
+
+    kaputt = scheitert("kaputt", {"__base64__": "kein gueltiges base64!!"})
+    tc.check("Invalid base64 exits 2 with a message and no traceback",
+             kaputt.returncode == 2
+             and "__base64__" in kaputt.stderr
+             and "Traceback (most recent call last)" not in kaputt.stderr,
+             f"returncode={kaputt.returncode}: {dim(kaputt.stderr[:300])}")
+
+    fehlt = scheitert("fehlt", {"__file__": "gibt-es-nicht.der"})
+    tc.check("A __file__ path that does not exist exits 2 and names the path",
+             fehlt.returncode == 2 and "gibt-es-nicht.der" in fehlt.stderr,
+             f"returncode={fehlt.returncode}: {dim(fehlt.stderr[:300])}")
+
+    daneben = scheitert("daneben", {"__base64__": base64_text, "extra": 1})
+    tc.check("A marker next to another key is rejected as ambiguous, exit 2",
+             daneben.returncode == 2 and "extra" in daneben.stderr,
+             f"returncode={daneben.returncode}: {dim(daneben.stderr[:300])}")
+
+    tc.check("No output file is left behind by any of the rejected specs",
+             not any(p.ziel.exists() for p in (kaputt, fehlt, daneben)),
+             ", ".join(str(p.ziel) for p in (kaputt, fehlt, daneben)
+                       if p.ziel.exists()))
+
+    # Ohne Marker bleibt alles, wie es war: ein nackter Base64-String ist
+    # eine Zeichenkette und faellt weiter durch die Typpruefung.
+    nackt = scheitert("nackt", base64_text)
+    tc.check("A plain base64 string is still a string and still fails as "
+             "expected <data>",
+             nackt.returncode == 2
+             and "expected <data>, got str" in nackt.stderr,
+             f"returncode={nackt.returncode}: {dim(nackt.stderr[:300])}")
+
+    # Verschachtelung, gegen kein Schema geprueft: hier geht es nur darum,
+    # dass der Marker in jeder Tiefe und auch in Listen erkannt wird.
+    tief_spec = arbeit / "tief.json"
+    tief_spec.write_text(json.dumps({
+        "meta": {"PayloadIdentifier": "com.example.eval10.tief"},
+        "payloads": [{
+            "PayloadType": "com.example.egal",
+            "Verschachtelt": {"Liste": [
+                {"__base64__": base64_text},
+                {"Tiefer": {"__file__": "zertifikat.der"}},
+            ]},
+        }],
+    }))
+    tief_out = arbeit / "tief.mobileconfig"
+    proc = run_build(tief_spec, tief_out, strict=False,
+                     zusatz=["--no-validate"])
+    tief_ok = False
+    if tief_out.exists():
+        liste = (load_plist(tief_out)["PayloadContent"][0]
+                 ["Verschachtelt"]["Liste"])
+        tief_ok = (liste[0] == EVAL_DATEN
+                   and liste[1]["Tiefer"] == EVAL_DATEN)
+    tc.check("Markers are resolved at any depth, inside dictionaries and "
+             "inside arrays", tief_ok,
+             f"returncode={proc.returncode}: {dim(proc.stderr[:300])}")
+    return tc
+
+
 # ─── Runner ────────────────────────────────────────────────────────────────
 def load_declared_expectations() -> dict[int, int]:
     """eval-id → Anzahl der in evals.json deklarierten Erwartungen."""
@@ -707,6 +969,8 @@ TESTS = {
     6: test_eval_6_unknown_top_level_key,
     7: test_eval_7_signing_error_paths,
     8: test_eval_8_profilemanifests_normalisierung,
+    9: test_eval_9_validate_mobileconfig,
+    10: test_eval_10_daten_marker,
 }
 
 

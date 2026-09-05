@@ -87,6 +87,132 @@ jobs:
       - name: Eval-Suite
         run: python3 evals/run_tests.py
 
+      # Der Validator fuer bereits vorhandene Profile. Die Eval-Suite deckt
+      # ihn ab, hier steht der Blick von aussen: Exit-Code und Ausgabe, so
+      # wie eine fremde CI sie sieht, die dieses Skript als Schranke vor ein
+      # Repository voller .mobileconfig-Dateien stellt.
+      - name: Bestehendes Profil pruefen
+        run: |
+          work="$(mktemp -d)"
+          val="scripts/validate_mobileconfig.py"
+
+          python3 scripts/build_mobileconfig.py \
+            assets/examples/classroom_ipad.json \
+            -o "$work/gut.mobileconfig" --offline --validate-strict \
+            > /dev/null
+
+          # 1. Was dieses Werkzeug baut, muss auch strikt durchgehen.
+          python3 "$val" "$work/gut.mobileconfig" --offline --strict
+          echo "OK 1: selbst gebautes Profil laeuft strikt mit Exit 0 durch"
+
+          # 2. Erfundener Key. Apples Schema sagt dazu nichts, also Warnung
+          # und Exit 1; mit --strict ein Fehler und Exit 2. Beides zaehlt in
+          # CI als rot, der Unterschied ist die Aussage.
+          python3 - "$work/gut.mobileconfig" "$work/erfunden.mobileconfig" \
+            <<'PY'
+          import plistlib, sys
+          with open(sys.argv[1], "rb") as fh:
+              profil = plistlib.load(fh)
+          profil["PayloadContent"][0]["GibtEsNichtKey"] = "irgendwas"
+          with open(sys.argv[2], "wb") as fh:
+              plistlib.dump(profil, fh)
+          PY
+
+          rc=0
+          python3 "$val" "$work/erfunden.mobileconfig" --offline \
+            > "$work/lax.txt" || rc=$?
+          cat "$work/lax.txt"
+          if [ "$rc" -ne 1 ]; then
+            echo "FEHLER: Exit 1 erwartet fuer eine reine Warnung, bekommen $rc"
+            exit 1
+          fi
+          if ! grep -q "WARNUNG" "$work/lax.txt"; then
+            echo "FEHLER: der Befund ist nicht als Warnung ausgewiesen"
+            exit 1
+          fi
+          if ! grep -q "PayloadContent\[0\]" "$work/lax.txt"; then
+            echo "FEHLER: der Befund nennt seinen Pfad nicht"
+            exit 1
+          fi
+          if ! grep -q "GibtEsNichtKey" "$work/lax.txt"; then
+            echo "FEHLER: der erfundene Key wird nicht benannt"
+            exit 1
+          fi
+
+          rc=0
+          python3 "$val" "$work/erfunden.mobileconfig" --offline --strict \
+            > "$work/streng.txt" || rc=$?
+          cat "$work/streng.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: mit --strict war Exit 2 erwartet, bekommen $rc"
+            exit 1
+          fi
+          echo "OK 2: erfundener Key ist Warnung mit Exit 1, strikt Fehler" \
+            "mit Exit 2"
+
+          # 3. Wert ausserhalb der rangelist. Das verletzt das Schema und ist
+          # deshalb auch ohne --strict ein Fehler.
+          python3 - "$work/gut.mobileconfig" "$work/verletzt.mobileconfig" \
+            <<'PY'
+          import plistlib, sys
+          with open(sys.argv[1], "rb") as fh:
+              profil = plistlib.load(fh)
+          profil["PayloadContent"][0]["EncryptionType"] = "SUPERWPA"
+          profil["PayloadScope"] = "Galaxy"
+          with open(sys.argv[2], "wb") as fh:
+              plistlib.dump(profil, fh)
+          PY
+
+          rc=0
+          python3 "$val" "$work/verletzt.mobileconfig" --offline \
+            > "$work/verletzt.txt" || rc=$?
+          cat "$work/verletzt.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet fuer den Schema-Verstoss, bekommen $rc"
+            exit 1
+          fi
+          if ! grep -q "SUPERWPA" "$work/verletzt.txt"; then
+            echo "FEHLER: der abgelehnte Wert wird nicht benannt"
+            exit 1
+          fi
+          if ! grep -q "top-level" "$work/verletzt.txt"; then
+            echo "FEHLER: der Top-Level-Verstoss wird nicht als solcher gemeldet"
+            exit 1
+          fi
+          echo "OK 3: Schema-Verstoss ist auch ohne --strict Exit 2"
+
+          # 4. Maschinenlesbare Ausgabe, damit eine fremde CI die Befunde
+          # weiterverarbeiten kann.
+          rc=0
+          python3 "$val" "$work/verletzt.mobileconfig" --offline \
+            --format json > "$work/befunde.json" || rc=$?
+          python3 -c "import json,sys; \
+            d=json.load(open(sys.argv[1])); \
+            assert d['exit_code']==2, d; \
+            assert d['fehler']>=2, d; \
+            b=d['dateien'][0]['befunde']; \
+            assert all({'stufe','pfad','text'} <= set(x) for x in b), b; \
+            print('JSON-Befunde:', len(b))" "$work/befunde.json"
+          echo "OK 4: --format json liefert Stufe, Pfad und Exit-Code"
+
+          # 5. Eine Datei, die kein Profil ist. Meldung mit Exit 2, kein
+          # Traceback.
+          echo "das ist kein Profil" > "$work/keine-plist.mobileconfig"
+          rc=0
+          python3 "$val" "$work/keine-plist.mobileconfig" --offline \
+            > "$work/mist.txt" 2> "$work/mist.err" || rc=$?
+          cat "$work/mist.txt" "$work/mist.err"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet, bekommen $rc"
+            exit 1
+          fi
+          if grep -q 'Traceback (most recent call last)' \
+              "$work/mist.txt" "$work/mist.err"; then
+            echo "FEHLER: Absturz statt Meldung"
+            exit 1
+          fi
+          echo "OK 5: keine Plist endet mit Meldung und Exit 2"
+
       - name: Erfundener Top-Level-Key bricht strikt ab
         run: |
           work="$(mktemp -d)"
@@ -256,6 +382,132 @@ jobs:
           fi
           echo "OK 5: gescheiterter zweiter Bau laesst das alte Profil ganz"
 
+          # 6. Der Validator auf einer signierten Datei. Das ist die einzige
+          # Stelle in dieser CI, an der ein PKCS#7-Container entsteht, und
+          # damit die einzige, an der sich das Auspacken pruefen laesst.
+          # Danach dasselbe mit einem geaenderten Byte: `openssl smime
+          # -verify -noverify` laesst die Kette ungeprueft, die Signatur
+          # nicht, also muss der Griff in die Datei auffallen.
+          python3 "$GITHUB_WORKSPACE/scripts/validate_mobileconfig.py" \
+            "$work/a/profil.mobileconfig" --offline --strict
+          echo "OK 6: signiertes Profil wird ausgepackt und laeuft durch"
+
+          python3 - "$work/a/profil.mobileconfig" "$work/a/kaputt.sig" <<'PY'
+          import pathlib, sys
+          roh = bytearray(pathlib.Path(sys.argv[1]).read_bytes())
+          stelle = roh.find(b"Signierpfade")
+          roh[stelle:stelle + 4] = b"XXXX"
+          pathlib.Path(sys.argv[2]).write_bytes(bytes(roh))
+          PY
+          rc=0
+          python3 "$GITHUB_WORKSPACE/scripts/validate_mobileconfig.py" \
+            "$work/a/kaputt.sig" --offline > "$work/a/sig.txt" || rc=$?
+          cat "$work/a/sig.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet fuer die veraenderte Signatur," \
+              "bekommen $rc"
+            exit 1
+          fi
+          if ! grep -q "PKCS#7" "$work/a/sig.txt"; then
+            echo "FEHLER: der Befund benennt den Container nicht"
+            exit 1
+          fi
+          echo "OK 7: veraenderte signierte Datei wird abgelehnt"
+
+      # Zertifikats-Payload aus einer JSON-Spec. Bis Welle 7 ging das nicht:
+      # <data> will Bytes, JSON kennt keine, und jeder Zertifikats-Payload
+      # scheiterte an genau dieser Stelle. Das Zertifikat entsteht hier zur
+      # Laufzeit, im Repo liegt keins.
+      - name: Zertifikat aus einer JSON-Spec
+        run: |
+          work="$(mktemp -d)"
+          cd "$work"
+          openssl req -x509 -newkey rsa:2048 -keyout ci.key -out ci.pem \
+            -days 2 -nodes -subj "/CN=CI-Wurzel" 2>/dev/null
+          openssl x509 -in ci.pem -outform der -out ci.der
+
+          build="$GITHUB_WORKSPACE/scripts/build_mobileconfig.py"
+          val="$GITHUB_WORKSPACE/scripts/validate_mobileconfig.py"
+
+          python3 - <<'PY'
+          import base64, json, pathlib
+          roh = pathlib.Path("ci.der").read_bytes()
+          def spec(kennung, inhalt):
+              return {"meta": {"PayloadIdentifier": kennung,
+                               "PayloadDisplayName": "CI-Wurzelzertifikat"},
+                      "payloads": [{"PayloadType": "com.apple.security.root",
+                                    "PayloadCertificateFileName": "ci.cer",
+                                    "PayloadContent": inhalt}]}
+          pathlib.Path("b64.json").write_text(json.dumps(spec(
+              "com.example.ci.cert.b64",
+              {"__base64__": base64.b64encode(roh).decode()})))
+          pathlib.Path("datei.json").write_text(json.dumps(spec(
+              "com.example.ci.cert.datei", {"__file__": "ci.der"})))
+          pathlib.Path("nackt.json").write_text(json.dumps(spec(
+              "com.example.ci.cert.nackt",
+              base64.b64encode(roh).decode())))
+          pathlib.Path("kaputt.json").write_text(json.dumps(spec(
+              "com.example.ci.cert.kaputt",
+              {"__base64__": "kein gueltiges base64!!"})))
+          print("Spec-Dateien geschrieben,", len(roh), "DER-Bytes")
+          PY
+
+          # 1. Beide Marker bauen, und beide tragen dieselben Bytes wie die
+          # DER-Datei. Der Validator aus demselben Repo sieht sich das
+          # Ergebnis danach noch einmal an.
+          for weg in b64 datei; do
+            python3 "$build" "$work/$weg.json" -o "$work/$weg.mobileconfig" \
+              --offline --validate-strict > /dev/null
+            python3 "$val" "$work/$weg.mobileconfig" --offline --strict \
+              > /dev/null
+          done
+          python3 -c "import plistlib,pathlib,sys; \
+            soll=pathlib.Path('ci.der').read_bytes(); \
+            [sys.exit('FEHLER: %s traegt andere Bytes' % w) \
+             for w in ('b64','datei') \
+             if plistlib.load(open(w+'.mobileconfig','rb'))\
+                ['PayloadContent'][0]['PayloadContent'] != soll]; \
+            print('beide Wege tragen', len(soll), 'Bytes, identisch zur DER-Datei')"
+          echo "OK 1: __base64__ und __file__ bauen ein gueltiges" \
+            "Zertifikats-Profil"
+
+          # 2. Ohne Marker bleibt es beim alten Verhalten. Ein nackter
+          # Base64-String ist eine Zeichenkette, und das Schema will Bytes.
+          rc=0
+          python3 "$build" "$work/nackt.json" -o "$work/nackt.mobileconfig" \
+            --offline --validate-strict 2> "$work/nackt.txt" || rc=$?
+          cat "$work/nackt.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet fuer den nackten String, bekommen $rc"
+            exit 1
+          fi
+          if ! grep -q "expected <data>, got str" "$work/nackt.txt"; then
+            echo "FEHLER: die alte Meldung fehlt"
+            exit 1
+          fi
+          echo "OK 2: nackter Base64-String faellt weiter durch"
+
+          # 3. Kaputtes Base64: Meldung mit Exit 2, keine Ausgabedatei, kein
+          # Traceback.
+          rc=0
+          python3 "$build" "$work/kaputt.json" \
+            -o "$work/kaputt.mobileconfig" --offline --validate-strict \
+            2> "$work/kaputt.txt" || rc=$?
+          cat "$work/kaputt.txt"
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: Exit 2 erwartet, bekommen $rc"
+            exit 1
+          fi
+          if [ -e "$work/kaputt.mobileconfig" ]; then
+            echo "FEHLER: trotz Abbruch wurde eine Datei geschrieben"
+            exit 1
+          fi
+          if grep -q 'Traceback (most recent call last)' "$work/kaputt.txt"; then
+            echo "FEHLER: Absturz statt Meldung"
+            exit 1
+          fi
+          echo "OK 3: kaputtes Base64 endet mit Meldung und Exit 2"
+
       - name: Schema-Inspektion des Wi-Fi-Payloads
         run: |
           out="$(python3 scripts/inspect_payload.py com.apple.wifi.managed \
@@ -320,6 +572,27 @@ jobs:
             print('Payload im Profil:', sorted(p))" "$work/mit.mobileconfig"
           if ! grep -q 'ProfileManifests' "$work/mit.txt"; then
             echo "FEHLER: der Lauf weist die Herkunft des Schemas nicht aus"
+            exit 1
+          fi
+
+          # Der Validator kennt dieselbe zweite Quelle. Ohne diese Zeilen
+          # waere sein --manifests-Flag dokumentiert und ungemessen.
+          python3 scripts/validate_mobileconfig.py "$work/mit.mobileconfig" \
+            --strict --manifests --manifests-ref "$MANIFESTS_SHA" \
+            > "$work/val_mit.txt"
+          cat "$work/val_mit.txt"
+          if ! grep -q 'ProfileManifests' "$work/val_mit.txt"; then
+            echo "FEHLER: der Validator weist die Herkunft nicht aus, und ein"
+            echo "sauberes Ergebnis ohne diese Angabe verschweigt, nach"
+            echo "wessen Regel geprueft wurde"
+            exit 1
+          fi
+          rc=0
+          python3 scripts/validate_mobileconfig.py "$work/mit.mobileconfig" \
+            --offline --strict > "$work/ohne_quelle.txt" || rc=$?
+          if [ "$rc" -ne 2 ]; then
+            echo "FEHLER: ohne --manifests war Exit 2 erwartet, bekommen $rc"
+            cat "$work/ohne_quelle.txt"
             exit 1
           fi
 
@@ -391,6 +664,7 @@ jobs:
             mobileconfig-builder/scripts/build_mobileconfig.py \
             mobileconfig-builder/scripts/fetch_schema.py \
             mobileconfig-builder/scripts/inspect_payload.py \
+            mobileconfig-builder/scripts/validate_mobileconfig.py \
             mobileconfig-builder/evals/run_tests.py \
             mobileconfig-builder/evals/evals.json \
             mobileconfig-builder/references/signing.md \

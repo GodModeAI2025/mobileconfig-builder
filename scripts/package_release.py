@@ -77,6 +77,7 @@ PFLICHT_DATEIEN = [
     "scripts/build_mobileconfig.py",
     "scripts/fetch_schema.py",
     "scripts/inspect_payload.py",
+    "scripts/validate_mobileconfig.py",
     "evals/run_tests.py",
     "evals/evals.json",
 ]

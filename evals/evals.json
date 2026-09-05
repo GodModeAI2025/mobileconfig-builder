@@ -138,6 +138,40 @@
         "An invented key and a value outside the range list are rejected with exit code 2",
         "The output names ProfileManifests as the source of the schema"
       ]
+    },
+    {
+      "id": 9,
+      "prompt": "Ich habe eine fertige .mobileconfig aus Jamf. Kann dein Werkzeug die pruefen, ohne dass ich sie neu baue?",
+      "expected_output": "validate_mobileconfig.py liest die fertige Datei, prueft die Profil-Ebene gegen TopLevel.yaml und jeden Eintrag aus PayloadContent gegen sein Schema. Verletzungen des Schemas sind Fehler und enden mit Exit 2. Stellen, zu denen Apples Schema nichts sagt, sind Warnungen und enden mit Exit 1: unbekannte Keys, PayloadTypes ohne Schema, format-Regex, doppelte PayloadUUIDs. Mit --strict werden daraus Fehler. Jeder Befund nennt seinen Pfad, --format json gibt dieselben Befunde maschinenlesbar aus, und eine Datei, die kein Profil ist, endet mit einer Meldung statt mit einem Traceback.",
+      "files": ["assets/examples/classroom_ipad.json"],
+      "expectations": [
+        "A profile this tool built validates with exit code 0",
+        "An invented payload key is reported as a warning and exits 1 by default",
+        "The same invented key becomes an error and exits 2 with --strict",
+        "The finding names the invented key and the path PayloadContent[0]",
+        "A value outside the schema's range list is an error and exits 2 without --strict",
+        "An invented top-level key is reported under top-level, not under a payload",
+        "A payload type without a schema is reported as unchecked, not as an error",
+        "--format json emits parseable JSON with level, path and exit code",
+        "A file that is not a property list exits 2 without a Python traceback"
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "Ich will ein Zertifikat in mein Profil packen und meine Spec ist JSON. Bisher hiess es, dafuer muss ich YAML schreiben. Geht das jetzt?",
+      "expected_output": "Der Builder loest die Marker {\"__base64__\": \"...\"} und {\"__file__\": \"pfad\"} vor der Validierung im ganzen Spec-Baum in Bytes auf, in beliebiger Tiefe und auch in Listen. Ein relativer Pfad zaehlt vom Verzeichnis der Spec aus. Die Bytes im Profil sind Byte fuer Byte das Dekodierte beziehungsweise der Dateiinhalt. Kaputtes Base64, ein nicht lesbarer Pfad und ein Marker neben einem anderen Key enden mit Exit 2, mit Meldung statt Traceback und ohne Ausgabedatei. Ein nackter Base64-String bleibt eine Zeichenkette und faellt weiter als expected <data>, got str durch.",
+      "files": [],
+      "expectations": [
+        "A JSON spec with a __base64__ marker builds with --validate-strict",
+        "The <data> value in the profile is byte-for-byte the decoded input",
+        "A __file__ marker reads the file next to the spec and yields the same bytes",
+        "Invalid base64 exits 2 with a message and no traceback",
+        "A __file__ path that does not exist exits 2 and names the path",
+        "A marker next to another key is rejected as ambiguous, exit 2",
+        "No output file is left behind by any of the rejected specs",
+        "A plain base64 string is still a string and still fails as expected <data>",
+        "Markers are resolved at any depth, inside dictionaries and inside arrays"
+      ]
     }
   ]
 }

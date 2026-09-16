@@ -58,18 +58,19 @@ ankommt:
 - **Passwort nicht auf der Kommandozeile.** `-passin pass:geheim` steht in
   der Prozessliste. `-passin stdin` liest die erste Zeile der
   Standardeingabe, `-passin env:VAR` eine Umgebungsvariable.
-- **`-legacy` nur bei OpenSSL 3.** Ältere Bündel sind mit RC2/3DES
-  verschlüsselt, OpenSSL 3 liest sie nur mit `-legacy`. Die mit macOS
+- **`-legacy` nur, wo es ihn gibt.** Ältere Bündel sind mit RC2/3DES
+  verschlüsselt, OpenSSL ab 3.0 liest sie nur mit `-legacy`. Die mit macOS
   gelieferte LibreSSL (`/usr/bin/openssl`) kennt den Schalter nicht und
   bricht mit `unknown option '-legacy'` ab, liest solche Bündel aber auch
-  ohne ihn.
+  ohne ihn. Deshalb fragt das Snippet die Hilfe von `openssl pkcs12` ab
+  statt einer Versionsnummer.
 
 ```bash
 umask 077
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 legacy=""
-openssl version | grep -q '^OpenSSL 3' && legacy="-legacy"
+openssl pkcs12 -help 2>&1 | grep -q -- '-legacy' && legacy="-legacy"
 
 read -rs P12_PW && export P12_PW
 openssl pkcs12 $legacy -in signer.p12 -passin env:P12_PW \

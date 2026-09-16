@@ -48,7 +48,8 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   `assets/examples/encrypted_dns.json`, das strikt durchbaut.
 - **`.p12`-Buendel in `references/signing.md`.** Wie sich ein PKCS#12-Buendel
   fuer den PEM-Weg zerlegen laesst, ohne Passwort in der Prozessliste und
-  ohne liegen gebliebenen Schluessel, mit `-legacy` nur fuer OpenSSL 3.
+  ohne liegen gebliebenen Schluessel, mit `-legacy` nur dort, wo
+  `openssl pkcs12` ihn kennt.
   Geprueft mit OpenSSL 3.6 und LibreSSL 3.3.
 
 - **Zertifikate aus einer JSON-Spec.** `{"__base64__": "..."}` und

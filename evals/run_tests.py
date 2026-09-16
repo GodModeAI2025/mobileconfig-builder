@@ -934,6 +934,71 @@ def test_eval_10_daten_marker(workdir: Path) -> TestCase:
     return tc
 
 
+def run_inspect(payloadtype: str, *zusatz: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(SCRIPTS / "inspect_payload.py"), payloadtype,
+         "--offline", *zusatz],
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def test_eval_11_os_unterstuetzung(workdir: Path) -> TestCase:
+    """`introduced: n/a` schliesst eine Plattform aus, statt sie zu nennen.
+
+    Vorher genuegte der blosse Eintrag unter supportedOS: `--os macOS` zeigte
+    iOS-only Keys wie MCCAndMNCs, und --list nannte tvOS und watchOS fuer
+    com.apple.dnsSettings.managed."""
+    tc = TestCase(11, "os-unterstuetzung-n-a")
+
+    liste = subprocess.run(
+        [sys.executable, str(SCRIPTS / "fetch_schema.py"),
+         "--list", "--offline"],
+        capture_output=True, text=True, timeout=30,
+    )
+    dns_zeile = next((l for l in liste.stdout.splitlines()
+                      if l.strip().startswith("com.apple.dnsSettings.managed ")),
+                     "")
+    tc.check("fetch_schema.py --list shows com.apple.dnsSettings.managed as "
+             "[iOS,macOS,visionOS]", "[iOS,macOS,visionOS]" in dns_zeile,
+             dns_zeile.strip() or liste.stderr[:200])
+
+    def keys(proc: subprocess.CompletedProcess) -> set[str]:
+        return {m.group(1) for m in
+                re.finditer(r"^\s*\*?\s*([A-Za-z0-9_]+):", proc.stdout, re.M)}
+
+    mac = keys(run_inspect("com.apple.wifi.managed", "--os", "macOS"))
+    ios = keys(run_inspect("com.apple.wifi.managed", "--os", "iOS"))
+    vision = keys(run_inspect("com.apple.wifi.managed", "--os", "visionOS"))
+    tc.check("inspect_payload.py --os macOS omits wifi keys marked macOS "
+             "introduced n/a (MCCAndMNCs, CaptiveBypass)",
+             "SSID_STR" in mac and not {"MCCAndMNCs", "CaptiveBypass"} & mac,
+             f"macOS keys: {len(mac)}")
+    tc.check("inspect_payload.py --os iOS still lists MCCAndMNCs and "
+             "CaptiveBypass", {"MCCAndMNCs", "CaptiveBypass"} <= ios,
+             f"iOS keys: {len(ios)}")
+    tc.check("A key's own supportedOS wins over the payload: "
+             "AllowJoinBeforeFirstUnlock appears for visionOS only",
+             "AllowJoinBeforeFirstUnlock" in vision
+             and "AllowJoinBeforeFirstUnlock" not in mac
+             and "AllowJoinBeforeFirstUnlock" not in ios)
+
+    kopf = run_inspect("com.apple.dnsSettings.managed")
+    zeile = next((l for l in kopf.stdout.splitlines()
+                  if l.startswith("# Supported on:")), "")
+    tc.check("The 'Supported on' header omits platforms marked introduced n/a",
+             zeile == "# Supported on: iOS, macOS, visionOS", zeile)
+
+    als_json = run_inspect("com.apple.dnsSettings.managed", "--json")
+    try:
+        os_liste = json.loads(als_json.stdout).get("supportedOS")
+    except json.JSONDecodeError:
+        os_liste = None
+    tc.check("inspect_payload.py --json reports supportedOS without platforms "
+             "marked introduced n/a", os_liste == ["iOS", "macOS", "visionOS"],
+             f"{os_liste}")
+    return tc
+
+
 # ─── Runner ────────────────────────────────────────────────────────────────
 def load_declared_expectations() -> dict[int, int]:
     """eval-id → Anzahl der in evals.json deklarierten Erwartungen."""
@@ -971,6 +1036,7 @@ TESTS = {
     8: test_eval_8_profilemanifests_normalisierung,
     9: test_eval_9_validate_mobileconfig,
     10: test_eval_10_daten_marker,
+    11: test_eval_11_os_unterstuetzung,
 }
 
 

@@ -25,6 +25,7 @@ from fetch_schema import (  # noqa: E402
     index_payloads,
     load_manifest_schema,
     load_schema_map,
+    unterstuetzte_os,
 )
 
 
@@ -78,6 +79,12 @@ def supported_on_os(item: dict, os_name: str | None,
     own = so.get(os_name)
     # If neither base nor own says anything → assume not supported
     if base is None and own is None:
+        return False
+    # `introduced: n/a` heisst "auf dieser Plattform nicht vorhanden". Ein
+    # eigener Eintrag des Keys gilt vor dem des Payloads; nennt er selbst
+    # keine Version (etwa nur `deprecated`), zaehlt die des Payloads.
+    introduced = (own or {}).get("introduced", (base or {}).get("introduced"))
+    if introduced == "n/a":
         return False
     # If "removed" → skip
     if own and own.get("removed"):
@@ -173,7 +180,7 @@ def main():
             "payloadtype": payload.get("payloadtype"),
             "title": doc.get("title"),
             "description": doc.get("description"),
-            "supportedOS": list(inherited_os.keys()),
+            "supportedOS": unterstuetzte_os(inherited_os),
             "supportedOS_detail": inherited_os,
             "origin": doc.get("_origin", "apple/device-management"),
             "payloadkeys": doc.get("payloadkeys", []),
@@ -193,7 +200,7 @@ def main():
               f"PayloadType, die Keys sind hier vereint.")
     if doc.get("description"):
         print(f"# {doc['description']}")
-    print(f"# Supported on: {', '.join(inherited_os.keys())}")
+    print(f"# Supported on: {', '.join(unterstuetzte_os(inherited_os))}")
     if args.os:
         print(f"# Filter: {args.os}")
     if args.required_only:

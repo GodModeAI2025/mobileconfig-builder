@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "PayloadIdentifier": "com.example.dns.doh",
+    "PayloadDisplayName": "Encrypted DNS (DoH)",
+    "PayloadDescription": "Routes DNS queries through the company DoH resolver, except for the internal zone",
+    "PayloadOrganization": "Example Corp",
+    "PayloadScope": "System"
+  },
+  "payloads": [
+    {
+      "PayloadType": "com.apple.dnsSettings.managed",
+      "PayloadDisplayName": "DNS over HTTPS: dns.example.com",
+      "DNSSettings": {
+        "DNSProtocol": "HTTPS",
+        "ServerURL": "https://dns.example.com/dns-query"
+      },
+      "OnDemandRules": [
+        {
+          "Action": "EvaluateConnection",
+          "ActionParameters": [
+            {
+              "Domains": ["corp.example.com"],
+              "DomainAction": "NeverConnect"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

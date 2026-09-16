@@ -44,6 +44,55 @@ python3 scripts/build_mobileconfig.py spec.json \
   --sign-ca   /path/to/ca-chain.pem
 ```
 
+### Nur eine `.p12`-Datei vorhanden
+
+Kommt das Zertifikat als PKCS#12-Bündel (`.p12`/`.pfx`), ist auf macOS der
+Import in den Schlüsselbund und dann Weg 2 die bessere Wahl: der Schlüssel
+liegt danach nie als ungeschützte PEM-Datei herum. Wo das nicht geht, etwa
+unter Linux, lässt sich das Bündel für Weg 1 zerlegen. Worauf es dabei
+ankommt:
+
+- **Privates Verzeichnis und Aufräumen.** `umask 077`, ein eigenes
+  `mktemp -d` und ein `trap`, der es auch bei einem Abbruch löscht. Der
+  unverschlüsselte Schlüssel soll den Bau nicht überleben.
+- **Passwort nicht auf der Kommandozeile.** `-passin pass:geheim` steht in
+  der Prozessliste. `-passin stdin` liest die erste Zeile der
+  Standardeingabe, `-passin env:VAR` eine Umgebungsvariable.
+- **`-legacy` nur bei OpenSSL 3.** Ältere Bündel sind mit RC2/3DES
+  verschlüsselt, OpenSSL 3 liest sie nur mit `-legacy`. Die mit macOS
+  gelieferte LibreSSL (`/usr/bin/openssl`) kennt den Schalter nicht und
+  bricht mit `unknown option '-legacy'` ab, liest solche Bündel aber auch
+  ohne ihn.
+
+```bash
+umask 077
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+legacy=""
+openssl version | grep -q '^OpenSSL 3' && legacy="-legacy"
+
+read -rs P12_PW && export P12_PW
+openssl pkcs12 $legacy -in signer.p12 -passin env:P12_PW \
+  -clcerts -nokeys -out "$tmp/cert.pem"
+openssl pkcs12 $legacy -in signer.p12 -passin env:P12_PW \
+  -cacerts -nokeys -out "$tmp/chain.pem"
+openssl pkcs12 $legacy -in signer.p12 -passin env:P12_PW \
+  -nocerts -nodes -out "$tmp/key.pem"
+unset P12_PW
+
+python3 scripts/build_mobileconfig.py spec.json \
+  -o profil.mobileconfig --offline \
+  --sign-cert "$tmp/cert.pem" --sign-key "$tmp/key.pem" \
+  --sign-ca "$tmp/chain.pem"
+```
+
+Enthält das Bündel keine Zwischenzertifikate, bleibt `chain.pem` leer; dann
+`--sign-ca` weglassen. Ob das Zertifikat überhaupt zum Signieren von
+Profilen taugt, zeigt
+`openssl x509 -in "$tmp/cert.pem" -noout -text | grep -A1 "Extended Key Usage"`
+(`-ext` kennt LibreSSL nicht): `E-mail Protection` oder gar keine
+EKU-Zeile ist richtig.
+
 ## Weg 2: Identität aus dem macOS-Schlüsselbund
 
 In Unternehmen liegt der private Schlüssel meist gar nicht als Datei vor. Er

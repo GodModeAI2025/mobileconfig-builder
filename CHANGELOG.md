@@ -12,6 +12,13 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 
 ### Geaendert
 
+- `inspect_payload.py` und `fetch_schema.py --list` werten `introduced: n/a`
+  aus. Apples Schema nennt eine Plattform auch dann unter `supportedOS`, wenn
+  es sie ausschliesst. Vorher zeigte `inspect_payload.py
+  com.apple.wifi.managed --os macOS` iOS-only Keys wie `MCCAndMNCs` und
+  `CaptiveBypass`, und `--list`, `Supported on` und `--json` nannten fuer
+  `com.apple.dnsSettings.managed` auch tvOS und watchOS. Ein eigener Eintrag
+  des Keys gilt vor dem des Payloads. Abgesichert ueber Eval 11.
 - `load_spec` und `build_profile` melden ihre Abbruchgruende jetzt als
   Meldung mit Exit 2 statt als Traceback. Eine Spec mit kaputtem JSON, ohne
   `PayloadIdentifier` oder mit leerer `payloads`-Liste lief vorher in einen
@@ -33,6 +40,17 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
   gegen ProfileManifests statt gegen Apples Schema geprueft wurden.
 
 ### Hinzugefuegt
+
+- **Verschluesseltes DNS.** Cheatsheet-Eintrag fuer
+  `com.apple.dnsSettings.managed` mit der Unterscheidung zwischen
+  Ausnahmeliste (`OnDemandRules` mit `NeverConnect`) und Beschraenkung auf
+  Domains (`SupplementalMatchDomains`), dazu das Beispiel
+  `assets/examples/encrypted_dns.json`, das strikt durchbaut.
+- **`.p12`-Buendel in `references/signing.md`.** Wie sich ein PKCS#12-Buendel
+  fuer den PEM-Weg zerlegen laesst, ohne Passwort in der Prozessliste und
+  ohne liegen gebliebenen Schluessel, mit `-legacy` nur dort, wo
+  `openssl pkcs12` ihn kennt.
+  Geprueft mit OpenSSL 3.6 und LibreSSL 3.3.
 
 - **Zertifikate aus einer JSON-Spec.** `{"__base64__": "..."}` und
   `{"__file__": "ca.der"}` werden vor der Validierung im ganzen Spec-Baum zu

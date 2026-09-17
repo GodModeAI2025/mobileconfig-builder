@@ -172,6 +172,20 @@
         "A plain base64 string is still a string and still fails as expected <data>",
         "Markers are resolved at any depth, inside dictionaries and inside arrays"
       ]
+    },
+    {
+      "id": 11,
+      "prompt": "Ich baue ein Profil nur fuer Macs. Zeig mir, welche WLAN-Keys es auf macOS gibt, und ob das DNS-Settings-Profil auch auf dem Apple TV geht.",
+      "expected_output": "Apples Schema fuehrt Plattformen, die es ausschliesst, mit `introduced: n/a`. inspect_payload.py --os macOS zeigt deshalb keine Keys, die fuer macOS n/a sind, etwa MCCAndMNCs oder CaptiveBypass aus com.apple.wifi.managed; mit --os iOS stehen sie da. Ein eigener Eintrag des Keys gilt vor dem des Payloads, AllowJoinBeforeFirstUnlock erscheint nur unter visionOS. fetch_schema.py --list, die Kopfzeile 'Supported on' und --json nennen fuer com.apple.dnsSettings.managed iOS, macOS und visionOS, aber weder tvOS noch watchOS.",
+      "files": [],
+      "expectations": [
+        "fetch_schema.py --list shows com.apple.dnsSettings.managed as [iOS,macOS,visionOS]",
+        "inspect_payload.py --os macOS omits wifi keys marked macOS introduced n/a (MCCAndMNCs, CaptiveBypass)",
+        "inspect_payload.py --os iOS still lists MCCAndMNCs and CaptiveBypass",
+        "A key's own supportedOS wins over the payload: AllowJoinBeforeFirstUnlock appears for visionOS only",
+        "The 'Supported on' header omits platforms marked introduced n/a",
+        "inspect_payload.py --json reports supportedOS without platforms marked introduced n/a"
+      ]
     }
   ]
 }

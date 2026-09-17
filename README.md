@@ -295,11 +295,12 @@ it complements a real scanner such as gitleaks rather than replacing it.
 
 - `assets/examples/wifi_guest.json` — Simple WPA Wi-Fi profile
 - `assets/examples/classroom_ipad.json` — Wi-Fi + iPadOS Restrictions combined
+- `assets/examples/encrypted_dns.json` — DNS over HTTPS with one internal zone excluded
 
 ## Testing
 
 ```bash
-python3 evals/run_tests.py        # Run all 10 eval tests
+python3 evals/run_tests.py        # Run all 11 eval tests
 python3 evals/run_tests.py -v     # Verbose output
 python3 evals/run_tests.py --eval-id 4   # Run a single test
 ```

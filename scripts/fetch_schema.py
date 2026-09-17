@@ -564,6 +564,18 @@ def load_manifest_schema(domain: str, ref: str = MANIFESTS_REF,
         doc, ref=ref, quelle=f"{MANIFESTS_REPO}@{ref}:{domain}.plist")
 
 
+def unterstuetzte_os(supported_os: dict | None) -> list[str]:
+    """Die Plattformen, fuer die das Schema eine Unterstuetzung angibt.
+
+    Apples YAML fuehrt eine Plattform auch dann unter `supportedOS`, wenn es
+    sie gerade ausschliesst: `introduced: n/a` heisst "gibt es dort nicht".
+    `com.apple.dnsSettings.managed` nennt tvOS und watchOS so, und die blosse
+    Schluesselliste machte daraus [iOS,macOS,tvOS,visionOS,watchOS].
+    """
+    return [name for name, eintrag in (supported_os or {}).items()
+            if (eintrag or {}).get("introduced") != "n/a"]
+
+
 def index_payloads(branch: str, refresh: bool = False,
                    offline: bool = False) -> list[dict]:
     """Erzeugt einen Index: payloadtype → Quelldateien + Metadaten.
@@ -583,7 +595,7 @@ def index_payloads(branch: str, refresh: bool = False,
             "payloadtype": ptype,
             "title": doc.get("title", ""),
             "description": doc.get("description", ""),
-            "supportedOS": list((payload.get("supportedOS") or {}).keys()),
+            "supportedOS": unterstuetzte_os(payload.get("supportedOS")),
             "is_helper": False,
         })
     return sorted(index, key=lambda x: x["payloadtype"])

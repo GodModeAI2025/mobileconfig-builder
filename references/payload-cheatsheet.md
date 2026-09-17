@@ -85,6 +85,29 @@ macOS-only. Erlaubt MDM-administrierte App-Privacy-Permissions (Kamera, Mikrofon
 - `Services` (dict mit `Camera`, `Microphone`, `SystemPolicyAllFiles`, `Accessibility`, `AppleEvents`, …)
 - Pro Service eine Liste von Apps mit `Identifier`, `IdentifierType`, `CodeRequirement`, `Allowed`
 
+## Verschlüsseltes DNS — `com.apple.dnsSettings.managed`
+
+Plattformen: iOS 14+, macOS 11+, visionOS. tvOS und watchOS führt das Schema mit `introduced: n/a`.
+
+- `DNSSettings` (dict, required)
+  - `DNSProtocol` (string, required, oneOf: `HTTPS`, `TLS`)
+  - `ServerURL` (string, DoH-URI-Template nach RFC 8484, `https://`)
+  - `ServerName` (string, DoT-Hostname zur Zertifikatsprüfung)
+  - `ServerAddresses` (array of string, IPv4/IPv6)
+  - `SupplementalMatchDomains` (array of string)
+  - `AllowFailover` (bool, ab OS 26), `PayloadCertificateUUID` (string, Client-Identität)
+- `OnDemandRules` (array, dieselbe Struktur wie im VPN-Payload)
+- `ProhibitDisablement` (bool, nur auf betreuten Geräten)
+
+Zwei Domain-Listen, die leicht verwechselt werden, weil beide „nur bestimmte Domains“ klingen:
+
+| Wunsch | Mechanismus |
+|---|---|
+| Verschlüsselt **außer** für `corp.example.com` (Ausnahmeliste) | `OnDemandRules` mit `Action: EvaluateConnection` und `ActionParameters: [{Domains: [...], DomainAction: NeverConnect}]` |
+| Verschlüsselt **nur** für `corp.example.com` (Split-DNS) | `DNSSettings.SupplementalMatchDomains: [...]` |
+
+Beide leer heißt: jede Anfrage geht an den Resolver, und das ist meist gewollt. Ein einzelnes führendes `*` ist erlaubt, `*.example.com` und `example.com` treffen beide `mail.example.com`. Apples Hinweis im Schema: per MDM installiert gilt die Einstellung nur für verwaltete WLAN-Netze, manuell installiert auch fürs Mobilfunknetz. Beispiel: `assets/examples/encrypted_dns.json`.
+
 ## Profile-Removal-Password — `com.apple.profileRemovalPassword`
 
 - `RemovalPassword` (string) — verhindert dass User Profil ohne Passwort entfernt

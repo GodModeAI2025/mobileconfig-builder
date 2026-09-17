@@ -82,6 +82,7 @@ Wähle den/die passenden `PayloadType`(s). Häufige:
 | Profile Removal Password | `com.apple.profileRemovalPassword` |
 | Privacy Preferences (TCC) | `com.apple.TCC.configuration-profile-policy` |
 | Software-Update Enforcement | `com.apple.SoftwareUpdate` |
+| Verschlüsseltes DNS (DoH/DoT) | `com.apple.dnsSettings.managed` (Ausnahmen vs. Beschränkung auf Domains, siehe Cheatsheet) |
 
 Bei mehreren Use-Cases: ein einziges Profil mit mehreren Payloads bauen — das ist Apple-Standard.
 
@@ -111,7 +112,7 @@ python3 scripts/inspect_payload.py com.apple.wifi.managed --os macOS --offline
 ```
 
 Optionen:
-- `--os <iOS|macOS|tvOS|visionOS|watchOS>` — Filter auf Keys, die auf dieser OS unterstützt werden
+- `--os <iOS|macOS|tvOS|visionOS|watchOS>` — Filter auf Keys, die auf dieser OS unterstützt werden (`introduced: n/a` im Schema zählt als nicht unterstützt)
 - `--required-only` — nur Pflichtfelder (Container für Required-Subkeys werden mit angezeigt)
 - `--json` — vollständiges Schema als JSON
 
@@ -322,7 +323,7 @@ geprüft ist.
 | `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter, Required-Only und mit `--manifests` auch Drittanbieter-Domains. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
 | `scripts/validate_mobileconfig.py` | Prüft eine fertige `.mobileconfig`, egal woher sie kommt. Liest XML-Plists, Binär-Plists und signierte PKCS#7-Container. |
-| `evals/run_tests.py` | Regressions-Test-Suite mit 10 realistischen Test-Cases (siehe unten). |
+| `evals/run_tests.py` | Regressions-Test-Suite mit 11 realistischen Test-Cases (siehe unten). |
 
 ## Beispiele
 
@@ -330,12 +331,14 @@ geprüft ist.
 
 `assets/examples/classroom_ipad.json` — WLAN + iPadOS-Restrictions kombiniert
 
+`assets/examples/encrypted_dns.json` — DNS over HTTPS mit einer ausgenommenen internen Zone
+
 ## Tests / Evals
 
 Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die vier Skripte (fetch/inspect/build/validate) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
 
 ```bash
-python3 evals/run_tests.py        # alle 10 Evals
+python3 evals/run_tests.py        # alle 11 Evals
 python3 evals/run_tests.py -v     # ausführlich (zeigt jeden Check)
 python3 evals/run_tests.py --eval-id 4   # nur einen
 ```
@@ -354,6 +357,7 @@ Die Suite prüft konkret:
 | 7 | `signing-error-paths` | Fehlerpfade beider Signier-Wege, auf jeder Plattform prüfbar: unbekannte Schlüsselbund-Identität und nicht existierende PEM-Datei enden mit Exit-Code 2, mit Meldung statt Traceback und ohne Rückstände. Insbesondere bleibt keine unsignierte Zwischendatei mit dem WLAN-Passwort liegen, und beim zweiten Bau auf denselben Pfad überlebt das dort liegende gültige Profil einen gescheiterten Signier-Versuch. Die Schlüsselbund-Checks decken die Vorabprüfung ab, nicht das Aufräumen: dort wird abgebrochen, bevor eine Datei entsteht. Den Ausgabepfad prüft der PEM-Weg. Der Erfolgsfall des Schlüsselbund-Wegs ist nicht automatisiert, er braucht eine Identität im Schlüsselbund. |
 | 9 | `validate-mobileconfig` | Der Validator gegen ein fertiges Profil: ein selbst gebautes läuft mit Exit 0 durch, ein erfundener Key ist eine Warnung mit Exit 1 und mit `--strict` ein Fehler mit Exit 2, ein Wert ausserhalb der `rangelist` ist auch ohne `--strict` ein Fehler, ein erfundener Top-Level-Key wird als `top-level` gemeldet und nicht als Payload-Fund, ein PayloadType ohne Schema gilt als ungeprüft statt als falsch, `--format json` liefert Stufe, Pfad und Exit-Code, und eine Datei, die kein Profil ist, endet mit einer Meldung statt mit einem Traceback. |
 | 10 | `daten-marker-in-json-spec` | `{"__base64__": ...}` und `{"__file__": ...}` werden vor der Validierung zu Bytes, in beliebiger Tiefe und in Listen. Die Bytes im Profil sind Byte für Byte das Dekodierte beziehungsweise der Dateiinhalt. Kaputtes Base64, ein nicht lesbarer Pfad und ein Marker neben einem anderen Key enden mit Exit-Code 2, ohne Ausgabedatei und ohne Traceback. Ein nackter Base64-String bleibt eine Zeichenkette. |
+| 11 | `os-unterstuetzung-n-a` | Plattformen mit `introduced: n/a` gelten als nicht unterstützt: `inspect_payload.py --os macOS` zeigt keine WLAN-Keys, die für macOS n/a sind, ein eigener Eintrag des Keys gilt vor dem des Payloads, und `--list`, die Kopfzeile `Supported on` sowie `--json` nennen für `com.apple.dnsSettings.managed` weder tvOS noch watchOS. |
 
 Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Einträge hat, hat Apple etwas am Repo geändert — Hinweis lesen, nicht reflexartig den Test anpassen.
 

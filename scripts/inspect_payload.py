@@ -26,6 +26,7 @@ from fetch_schema import (  # noqa: E402
     load_manifest_schema,
     load_schema_map,
     unterstuetzte_os,
+    veraltet_ab,
 )
 
 
@@ -116,7 +117,10 @@ def render_keys(keys: list[dict], indent: int = 0,
         marker = "*" if key.get("presence") == "required" else " "
         title = key.get("title", "")
         title_part = f" — {title}" if title else ""
-        lines.append(f"{pad}{marker} {name}: {fmt_type(key)}{title_part}")
+        veraltet = veraltet_ab(key.get("supportedOS"))
+        alt_part = f"  [deprecated: {', '.join(veraltet)}]" if veraltet else ""
+        lines.append(
+            f"{pad}{marker} {name}: {fmt_type(key)}{title_part}{alt_part}")
         content = key.get("content")
         if content and indent < 3:
             short = content.replace("\n", " ").strip()
@@ -182,6 +186,7 @@ def main():
             "description": doc.get("description"),
             "supportedOS": unterstuetzte_os(inherited_os),
             "supportedOS_detail": inherited_os,
+            "deprecated": veraltet_ab(inherited_os),
             "origin": doc.get("_origin", "apple/device-management"),
             "payloadkeys": doc.get("payloadkeys", []),
         }, indent=2, ensure_ascii=False))
@@ -201,12 +206,17 @@ def main():
     if doc.get("description"):
         print(f"# {doc['description']}")
     print(f"# Supported on: {', '.join(unterstuetzte_os(inherited_os))}")
+    veraltet = veraltet_ab(inherited_os)
+    if veraltet:
+        print(f"# Deprecated: Apple raet von diesem Payload ab, ab "
+              f"{', '.join(veraltet)}.")
     if args.os:
         print(f"# Filter: {args.os}")
     if args.required_only:
         print("# Showing required keys only (with their containers)")
     print()
-    print("Legende:  *=required  — keinMarker=optional")
+    print("Legende:  *=required  — keinMarker=optional  "
+          "[deprecated: …]=Apple raet ab")
     print()
     lines = render_keys(doc.get("payloadkeys", []),
                         os_name=args.os, inherited_os=inherited_os,

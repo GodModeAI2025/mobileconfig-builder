@@ -22,8 +22,7 @@
       "allowAppInstallation": false,
       "allowCamera": true,
       "allowExplicitContent": false,
-      "allowInAppPurchases": false,
-      "forceITunesStorePasswordEntry": true
+      "allowInAppPurchases": false
     }
   ]
 }

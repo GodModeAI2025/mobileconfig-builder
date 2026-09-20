@@ -999,6 +999,96 @@ def test_eval_11_os_unterstuetzung(workdir: Path) -> TestCase:
     return tc
 
 
+def test_eval_12_deprecated_hinweise(workdir: Path) -> TestCase:
+    """Apple fuehrt 102 Keys und 13 Payloads als deprecated.
+
+    Das Schema sagt das in `supportedOS.<OS>.deprecated`, und bis hierher
+    las es niemand. Ein Profil konnte strikt valide sein und nach dem
+    naechsten OS-Update trotzdem nichts mehr bewirken.
+    """
+    tc = TestCase(12, "deprecated-hinweise")
+    arbeit = workdir / "eval12"
+    arbeit.mkdir(exist_ok=True)
+
+    spec = arbeit / "veraltet.json"
+    spec.write_text(json.dumps({
+        "meta": {
+            "PayloadIdentifier": "com.example.deprecated",
+            "PayloadDisplayName": "Deprecated-Test",
+        },
+        "payloads": [
+            {
+                "PayloadType": "com.apple.SetupAssistant.managed",
+                "SkipSiriSetup": True,
+                "SkipSetupItems": ["Accessibility"],
+            },
+            {
+                "PayloadType": "com.apple.systempreferences",
+                "DisabledPreferencePanes": ["com.apple.preference.security"],
+            },
+        ],
+    }), encoding="utf-8")
+
+    profil = arbeit / "veraltet.mobileconfig"
+    bau = run_build(spec, profil, strict=True)
+    if bau.returncode != 0 or not profil.exists():
+        tc.check("Build of the deprecated-key profile succeeds", False,
+                 dim(bau.stderr[:300]))
+        return tc
+
+    ohne = run_validate([profil])
+    tc.check("Without --deprecations the profile is clean and exits 0",
+             ohne.returncode == 0 and "HINWEIS" not in ohne.stdout,
+             f"exit {ohne.returncode}")
+
+    mit = run_validate([profil], zusatz=["--deprecations"])
+    tc.check("--deprecations names the deprecated key with its version",
+             "SkipSiriSetup" in mit.stdout and "macOS 15.0" in mit.stdout,
+             dim(mit.stdout[:300]))
+    tc.check("--deprecations names a deprecated payload, not only keys",
+             "com.apple.systempreferences: Payload" in mit.stdout
+             and "macOS 13.0" in mit.stdout)
+    tc.check("A key that is not deprecated stays unmentioned",
+             "SkipSetupItems" not in mit.stdout)
+    tc.check("Hints do not change the exit code, not even with --strict",
+             mit.returncode == 0
+             and run_validate([profil], strict=True,
+                              zusatz=["--deprecations"]).returncode == 0,
+             f"exit {mit.returncode}")
+
+    als_json = run_validate([profil],
+                            zusatz=["--deprecations", "--format", "json"])
+    try:
+        daten = json.loads(als_json.stdout)
+    except json.JSONDecodeError:
+        daten = {}
+    stufen = {b["stufe"] for datei in daten.get("dateien", [])
+              for b in datei.get("befunde", [])}
+    tc.check("--format json reports them as stufe 'hinweis' and counts them",
+             stufen == {"hinweis"} and daten.get("hinweise") == 2
+             and daten.get("exit_code") == 0, f"{stufen}, {daten.get('hinweise')}")
+
+    schau = run_inspect("com.apple.SetupAssistant.managed", "--os", "macOS")
+    tc.check("inspect_payload.py marks a deprecated key in the listing",
+             "SkipSiriSetup" in schau.stdout
+             and "[deprecated: macOS 15.0]" in schau.stdout,
+             dim(schau.stdout[:200]))
+
+    kopf = run_inspect("com.apple.systempreferences")
+    tc.check("inspect_payload.py says so in the header for a deprecated "
+             "payload", "# Deprecated:" in kopf.stdout
+             and "macOS 13.0" in kopf.stdout,
+             dim(kopf.stdout[:200]))
+
+    beispiel = arbeit / "wifi.mobileconfig"
+    run_build(ASSETS / "examples" / "wifi_guest.json", beispiel, strict=True)
+    rein = run_validate([beispiel], zusatz=["--deprecations"])
+    tc.check("A profile without deprecated keys reports no hints",
+             "HINWEIS" not in rein.stdout and rein.returncode == 0,
+             dim(rein.stdout[:200]))
+    return tc
+
+
 # ─── Runner ────────────────────────────────────────────────────────────────
 def load_declared_expectations() -> dict[int, int]:
     """eval-id → Anzahl der in evals.json deklarierten Erwartungen."""
@@ -1037,6 +1127,7 @@ TESTS = {
     9: test_eval_9_validate_mobileconfig,
     10: test_eval_10_daten_marker,
     11: test_eval_11_os_unterstuetzung,
+    12: test_eval_12_deprecated_hinweise,
 }
 
 

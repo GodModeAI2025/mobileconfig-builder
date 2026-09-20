@@ -258,7 +258,15 @@ Erkannt werden XML-Plists, Binär-Plists und signierte PKCS#7-Container; die sig
 
 Wichtig beim Berichten: eine Warnung ist kein Befund gegen das Profil, sondern eine Stelle, an der dieses Werkzeug nichts sagen kann. Fremde Profile tragen regelmässig Keys, die Apple nie beschrieben hat. Nenne dem User beide Stufen getrennt und behaupte nicht, ein Profil mit Warnungen sei kaputt.
 
-Was der Validator nicht leistet: er prüft nicht, ob das Zielsystem die Keys unterstützt (`supportedOS` bleibt unbeachtet), er sagt nicht, wer signiert hat (die Zertifikatskette wird bewusst nicht geprüft), und verschlüsselte Payloads bleiben zu.
+Steht ein OS-Upgrade an, kommt `--deprecations` dazu:
+
+```bash
+python3 scripts/validate_mobileconfig.py profil.mobileconfig --offline --deprecations
+```
+
+Gemeldet wird dann jeder gesetzte Key und jeder Payload, den Apple unter `supportedOS.<OS>.deprecated` führt, mit Plattform und Version. Das ist eine dritte, rein informierende Stufe **Hinweis**: ein deprecated Key ist kein Verstoss, er funktioniert, bis Apple ihn entfernt — aber genau solche Keys machen ein Profil nach einem Upgrade stillschweigend wirkungslos. `--strict` macht daraus keinen Fehler, und der Exit-Code bleibt unberührt. Ohne das Flag ändert sich nichts.
+
+Was der Validator nicht leistet: er prüft nicht, ob das Zielsystem die Keys unterstützt (`supportedOS` bleibt sonst unbeachtet), er sagt nicht, wer signiert hat (die Zertifikatskette wird bewusst nicht geprüft), und verschlüsselte Payloads bleiben zu.
 
 ### Daten-Felder (`<data>`)
 
@@ -320,10 +328,10 @@ geprüft ist.
 | Skript | Zweck |
 |---|---|
 | `scripts/fetch_schema.py` | Lädt/cached YAML-Schemas vom GitHub-Repo. Unterstützt `--offline`, `--from-clone`, `--list`. |
-| `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes. Unterstützt OS-Filter, Required-Only und mit `--manifests` auch Drittanbieter-Domains. |
+| `scripts/inspect_payload.py` | Zeigt Keys/Pflichtfelder/Typen eines PayloadTypes, markiert deprecated Keys. Unterstützt OS-Filter, Required-Only und mit `--manifests` auch Drittanbieter-Domains. |
 | `scripts/build_mobileconfig.py` | Baut & validiert das Profil. Erzeugt unsignierte oder PKCS#7-signierte `.mobileconfig`. |
-| `scripts/validate_mobileconfig.py` | Prüft eine fertige `.mobileconfig`, egal woher sie kommt. Liest XML-Plists, Binär-Plists und signierte PKCS#7-Container. |
-| `evals/run_tests.py` | Regressions-Test-Suite mit 11 realistischen Test-Cases (siehe unten). |
+| `scripts/validate_mobileconfig.py` | Prüft eine fertige `.mobileconfig`, egal woher sie kommt. Liest XML-Plists, Binär-Plists und signierte PKCS#7-Container; mit `--deprecations` zusätzlich Keys, von denen Apple abrät. |
+| `evals/run_tests.py` | Regressions-Test-Suite mit 12 realistischen Test-Cases (siehe unten). |
 
 ## Beispiele
 
@@ -338,7 +346,7 @@ geprüft ist.
 Der Skill bringt eine eigene Test-Suite mit, die nach jeder Änderung zeigen soll, ob die vier Skripte (fetch/inspect/build/validate) noch das tun, was die SKILL.md verspricht. Format der Test-Cases folgt dem Schema von Anthropic's `skill-creator` (`evals/evals.json`).
 
 ```bash
-python3 evals/run_tests.py        # alle 11 Evals
+python3 evals/run_tests.py        # alle 12 Evals
 python3 evals/run_tests.py -v     # ausführlich (zeigt jeden Check)
 python3 evals/run_tests.py --eval-id 4   # nur einen
 ```
@@ -358,6 +366,7 @@ Die Suite prüft konkret:
 | 9 | `validate-mobileconfig` | Der Validator gegen ein fertiges Profil: ein selbst gebautes läuft mit Exit 0 durch, ein erfundener Key ist eine Warnung mit Exit 1 und mit `--strict` ein Fehler mit Exit 2, ein Wert ausserhalb der `rangelist` ist auch ohne `--strict` ein Fehler, ein erfundener Top-Level-Key wird als `top-level` gemeldet und nicht als Payload-Fund, ein PayloadType ohne Schema gilt als ungeprüft statt als falsch, `--format json` liefert Stufe, Pfad und Exit-Code, und eine Datei, die kein Profil ist, endet mit einer Meldung statt mit einem Traceback. |
 | 10 | `daten-marker-in-json-spec` | `{"__base64__": ...}` und `{"__file__": ...}` werden vor der Validierung zu Bytes, in beliebiger Tiefe und in Listen. Die Bytes im Profil sind Byte für Byte das Dekodierte beziehungsweise der Dateiinhalt. Kaputtes Base64, ein nicht lesbarer Pfad und ein Marker neben einem anderen Key enden mit Exit-Code 2, ohne Ausgabedatei und ohne Traceback. Ein nackter Base64-String bleibt eine Zeichenkette. |
 | 11 | `os-unterstuetzung-n-a` | Plattformen mit `introduced: n/a` gelten als nicht unterstützt: `inspect_payload.py --os macOS` zeigt keine WLAN-Keys, die für macOS n/a sind, ein eigener Eintrag des Keys gilt vor dem des Payloads, und `--list`, die Kopfzeile `Supported on` sowie `--json` nennen für `com.apple.dnsSettings.managed` weder tvOS noch watchOS. |
+| 12 | `deprecated-hinweise` | `--deprecations` nennt gesetzte Keys und Payloads, die Apple als deprecated führt, mit Plattform und Version, in Text und JSON; ohne das Flag ändert sich nichts, die Stufe `Hinweis` überlebt `--strict` und lässt den Exit-Code auf 0, und `inspect_payload.py` markiert dieselben Stellen im Listing und in der Kopfzeile. |
 
 Wenn nach einer Schema-Aktualisierung (`--refresh`) Eval 5 plötzlich weniger Einträge hat, hat Apple etwas am Repo geändert — Hinweis lesen, nicht reflexartig den Test anpassen.
 

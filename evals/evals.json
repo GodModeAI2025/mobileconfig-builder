@@ -186,6 +186,23 @@
         "The 'Supported on' header omits platforms marked introduced n/a",
         "inspect_payload.py --json reports supportedOS without platforms marked introduced n/a"
       ]
+    },
+    {
+      "id": 12,
+      "prompt": "Wir stellen auf die naechste macOS-Version um. Sag mir, ob in unseren bestehenden Profilen Keys stecken, von denen Apple inzwischen abraet.",
+      "expected_output": "validate_mobileconfig.py --deprecations meldet jeden gesetzten Key und jeden Payload, den Apples Schema unter supportedOS.<OS>.deprecated fuehrt, mit Plattform und Version, etwa SkipSiriSetup ab macOS 15.0 oder com.apple.systempreferences als Payload ab macOS 13.0. Das ist kein Schema-Verstoss: die Stufe heisst HINWEIS, --strict macht daraus keinen Fehler und der Exit-Code bleibt 0. Ohne das Flag aendert sich nichts. inspect_payload.py markiert dieselben Stellen beim Aussuchen der Keys, mit [deprecated: …] hinter dem Key und einer Kopfzeile '# Deprecated:' beim Payload.",
+      "files": [],
+      "expectations": [
+        "Without --deprecations the profile is clean and exits 0",
+        "--deprecations names the deprecated key with its version",
+        "--deprecations names a deprecated payload, not only keys",
+        "A key that is not deprecated stays unmentioned",
+        "Hints do not change the exit code, not even with --strict",
+        "--format json reports them as stufe 'hinweis' and counts them",
+        "inspect_payload.py marks a deprecated key in the listing",
+        "inspect_payload.py says so in the header for a deprecated payload",
+        "A profile without deprecated keys reports no hints"
+      ]
     }
   ]
 }

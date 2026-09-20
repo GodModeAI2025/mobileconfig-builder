@@ -576,6 +576,28 @@ def unterstuetzte_os(supported_os: dict | None) -> list[str]:
             if (eintrag or {}).get("introduced") != "n/a"]
 
 
+def veraltet_ab(supported_os: dict | None) -> list[str]:
+    """Die Plattformen, auf denen Apple den Eintrag als deprecated fuehrt.
+
+    Jede Plattform steht als "macOS 13.0" drin, also mit der Version, ab der
+    Apple abraet. Ein `deprecated` neben `introduced: n/a` wird nicht
+    gemeldet: dort gibt es den Key ohnehin nicht.
+
+    Deprecated heisst bei Apple "geht noch, aber nimm es nicht mehr". Es ist
+    deshalb kein Schema-Verstoss, sondern eine Information -- was damit
+    geschieht, entscheidet der Aufrufer.
+    """
+    treffer = []
+    for name, eintrag in (supported_os or {}).items():
+        eintrag = eintrag or {}
+        if eintrag.get("introduced") == "n/a":
+            continue
+        version = eintrag.get("deprecated")
+        if version:
+            treffer.append(f"{name} {version}")
+    return sorted(treffer)
+
+
 def index_payloads(branch: str, refresh: bool = False,
                    offline: bool = False) -> list[dict]:
     """Erzeugt einen Index: payloadtype → Quelldateien + Metadaten.

@@ -31,6 +31,15 @@ Zwei Stufen, und die Regel dahinter ist eine einzige:
               Key, PayloadType ohne Schema, Verstoss gegen eine
               format-Regex, doppelt vergebene PayloadUUID.
 
+Dazu kommt mit `--deprecations` eine dritte, rein informierende Stufe:
+
+    HINWEIS   Apple fuehrt den Payload oder den Key als deprecated. Das ist
+              kein Verstoss -- er funktioniert, bis Apple ihn entfernt --,
+              aber genau solche Keys machen ein Profil nach einem
+              OS-Upgrade stillschweigend wirkungslos. `--strict` macht
+              daraus nichts anderes, und der Exit-Code bleibt davon
+              unberuehrt.
+
 Warum die Trennung: ein echtes Profil aus einem MDM trägt regelmässig Keys,
 die Apples YAML nicht beschreibt, und Payloads von Drittanbietern, für die
 Apple gar kein Schema hat. Wären das Fehler, wäre das Werkzeug auf genau den
@@ -46,6 +55,7 @@ Exit-Codes:
 Usage:
     python3 validate_mobileconfig.py profil.mobileconfig
     python3 validate_mobileconfig.py *.mobileconfig --strict
+    python3 validate_mobileconfig.py profil.mobileconfig --deprecations
     python3 validate_mobileconfig.py profil.mobileconfig --format json
     python3 validate_mobileconfig.py profil.mobileconfig --manifests
 """
@@ -63,11 +73,13 @@ from build_mobileconfig import (  # noqa: E402
     load_all_schemas,
     validate_payload,
     validate_top_level,
+    veraltete_eintraege,
 )
 from fetch_schema import MANIFESTS_REF  # noqa: E402
 
 FEHLER = "Fehler"
 WARNUNG = "Warnung"
+HINWEIS = "Hinweis"
 
 # Wie lange `openssl smime -verify` höchstens brauchen darf. Das Auspacken
 # rechnet nichts Aufwendiges, ein Aufruf, der hier stehenbleibt, ist kaputt.
@@ -222,7 +234,8 @@ def _pruefe_uuids(profil: dict, payloads: list) -> list[dict]:
 
 
 def pruefe_profil(profil: dict, branch: str = "release",
-                  manifeste: dict | None = None
+                  manifeste: dict | None = None,
+                  deprecations: bool = False
                   ) -> tuple[list[dict], list[str]]:
     """(Befunde, PayloadTypes aus ProfileManifests) zu einem Profil.
 
@@ -292,13 +305,17 @@ def pruefe_profil(profil: dict, branch: str = "release",
             befunde.append(_befund(FEHLER, pfad, text))
         for text in _differenz(streng, lax):
             befunde.append(_befund(WARNUNG, pfad, text))
+        if deprecations:
+            for text in veraltete_eintraege(payload, branch,
+                                            manifeste=manifeste):
+                befunde.append(_befund(HINWEIS, pfad, text))
 
     befunde += _pruefe_uuids(profil, payloads)
     return befunde, sorted(set(aus_manifest))
 
 
 def pruefe_datei(pfad: Path, branch: str, manifeste: dict | None,
-                 offline: bool) -> dict:
+                 offline: bool, deprecations: bool = False) -> dict:
     """Ein Ergebnis-Dict je Datei, auch im Fehlerfall."""
     ergebnis = {
         "datei": str(pfad),
@@ -316,20 +333,28 @@ def pruefe_datei(pfad: Path, branch: str, manifeste: dict | None,
     inhalt = profil.get("PayloadContent")
     ergebnis["payloads"] = len(inhalt) if isinstance(inhalt, list) else 0
     ergebnis["befunde"], ergebnis["aus_manifest"] = pruefe_profil(
-        profil, branch=branch, manifeste=manifeste)
+        profil, branch=branch, manifeste=manifeste,
+        deprecations=deprecations)
     return ergebnis
 
 
-def _zaehle(ergebnisse: list[dict], strict: bool) -> tuple[int, int]:
-    """(Fehler, Warnungen) über alle Dateien, unter Beachtung von --strict."""
-    fehler = warnungen = 0
+def _zaehle(ergebnisse: list[dict], strict: bool) -> tuple[int, int, int]:
+    """(Fehler, Warnungen, Hinweise), unter Beachtung von --strict.
+
+    Hinweise bleiben aussen vor: `--strict` macht aus ihnen keine Fehler,
+    und sie aendern den Exit-Code nicht. Ein deprecated Key ist kein Mangel
+    der Datei, sondern eine Angabe ueber ihre Zukunft.
+    """
+    fehler = warnungen = hinweise = 0
     for e in ergebnisse:
         for b in e["befunde"]:
-            if b["stufe"] == FEHLER or strict:
+            if b["stufe"] == HINWEIS:
+                hinweise += 1
+            elif b["stufe"] == FEHLER or strict:
                 fehler += 1
             else:
                 warnungen += 1
-    return fehler, warnungen
+    return fehler, warnungen, hinweise
 
 
 def _bericht_text(ergebnisse: list[dict], strict: bool) -> str:
@@ -350,21 +375,28 @@ def _bericht_text(ergebnisse: list[dict], strict: bool) -> str:
             zeilen.append("  keine Befunde")
             continue
         for b in e["befunde"]:
-            stufe = FEHLER if strict else b["stufe"]
-            marke = "FEHLER " if stufe == FEHLER else "WARNUNG"
+            if b["stufe"] == HINWEIS:
+                marke = "HINWEIS"
+            else:
+                stufe = FEHLER if strict else b["stufe"]
+                marke = "FEHLER " if stufe == FEHLER else "WARNUNG"
             zeilen.append(f"  {marke}  {b['pfad']}: {b['text']}")
-    fehler, warnungen = _zaehle(ergebnisse, strict)
+    fehler, warnungen, hinweise = _zaehle(ergebnisse, strict)
     zeilen.append("")
+    zusatz = f", {hinweise} Hinweis(e)" if hinweise else ""
     zeilen.append(f"{len(ergebnisse)} Datei(en), {fehler} Fehler, "
-                  f"{warnungen} Warnung(en)")
+                  f"{warnungen} Warnung(en){zusatz}")
     if warnungen and not strict:
         zeilen.append("Warnungen sind Stellen, zu denen Apples Schema nichts "
                       "sagt. Mit --strict werden daraus Fehler.")
+    if hinweise:
+        zeilen.append("Hinweise nennen Payloads und Keys, von denen Apple "
+                      "abraet. Sie aendern den Exit-Code nicht.")
     return "\n".join(zeilen)
 
 
 def _bericht_json(ergebnisse: list[dict], strict: bool, code: int) -> str:
-    fehler, warnungen = _zaehle(ergebnisse, strict)
+    fehler, warnungen, hinweise = _zaehle(ergebnisse, strict)
     daten = {
         "strict": strict,
         "dateien": [
@@ -375,7 +407,9 @@ def _bericht_json(ergebnisse: list[dict], strict: bool, code: int) -> str:
                 "aus_manifest": e["aus_manifest"],
                 "befunde": [
                     {
-                        "stufe": (FEHLER if strict else b["stufe"]).lower(),
+                        "stufe": (b["stufe"] if b["stufe"] == HINWEIS
+                                  else (FEHLER if strict
+                                        else b["stufe"])).lower(),
                         "pfad": b["pfad"],
                         "text": b["text"],
                     }
@@ -386,6 +420,7 @@ def _bericht_json(ergebnisse: list[dict], strict: bool, code: int) -> str:
         ],
         "fehler": fehler,
         "warnungen": warnungen,
+        "hinweise": hinweise,
         "exit_code": code,
     }
     return json.dumps(daten, indent=2, ensure_ascii=False)
@@ -406,6 +441,10 @@ def main(argv=None) -> int:
                     help="Warnungen als Fehler werten (unbekannte Keys, "
                          "PayloadTypes ohne Schema, format-Regex, doppelte "
                          "PayloadUUIDs)")
+    ap.add_argument("--deprecations", action="store_true",
+                    help="Zusaetzlich melden, welche Payloads und Keys Apple "
+                         "als deprecated fuehrt (Stufe HINWEIS, aendert den "
+                         "Exit-Code nicht)")
     ap.add_argument("--manifests", action="store_true",
                     help="ProfileManifests als zweite Schema-Quelle zulassen, "
                          "fuer PayloadTypes, die Apple nicht kennt")
@@ -428,9 +467,10 @@ def main(argv=None) -> int:
         print(f"FEHLER: {fehler}", file=sys.stderr)
         return 2
 
-    ergebnisse = [pruefe_datei(p, args.branch, manifeste, args.offline)
+    ergebnisse = [pruefe_datei(p, args.branch, manifeste, args.offline,
+                               deprecations=args.deprecations)
                   for p in args.profil]
-    fehler, warnungen = _zaehle(ergebnisse, args.strict)
+    fehler, warnungen, _ = _zaehle(ergebnisse, args.strict)
     code = 2 if fehler else (1 if warnungen else 0)
 
     if args.format == "json":

@@ -45,8 +45,11 @@ Sehr viele Booleans:
 - `allowCamera`, `allowExplicitContent`, `allowInAppPurchases`
 - `allowSafari`, `allowAirDrop`, `allowAssistant`
 - `forcePasscodeOnDeviceLock`
-- `forceITunesStorePasswordEntry`
 - … (>200 Keys; per `inspect_payload.py` schauen)
+
+`forceITunesStorePasswordEntry` fuehrt Apple seit iOS 17 als deprecated;
+`allowInAppPurchases` deckt denselben Zweck ab. `inspect_payload.py`
+markiert solche Keys mit `[deprecated: …]`.
 
 ## Restrictions macOS — `com.apple.applicationaccess.new`
 

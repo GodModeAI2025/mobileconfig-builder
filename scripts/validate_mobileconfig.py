@@ -33,12 +33,12 @@ Zwei Stufen, und die Regel dahinter ist eine einzige:
 
 Dazu kommt mit `--deprecations` eine dritte, rein informierende Stufe:
 
-    HINWEIS   Apple fuehrt den Payload oder den Key als deprecated. Das ist
+    HINWEIS   Apple führt den Payload oder den Key als deprecated. Das ist
               kein Verstoss -- er funktioniert, bis Apple ihn entfernt --,
               aber genau solche Keys machen ein Profil nach einem
               OS-Upgrade stillschweigend wirkungslos. `--strict` macht
               daraus nichts anderes, und der Exit-Code bleibt davon
-              unberuehrt.
+              unberührt.
 
 Warum die Trennung: ein echtes Profil aus einem MDM trägt regelmässig Keys,
 die Apples YAML nicht beschreibt, und Payloads von Drittanbietern, für die
@@ -342,7 +342,7 @@ def _zaehle(ergebnisse: list[dict], strict: bool) -> tuple[int, int, int]:
     """(Fehler, Warnungen, Hinweise), unter Beachtung von --strict.
 
     Hinweise bleiben aussen vor: `--strict` macht aus ihnen keine Fehler,
-    und sie aendern den Exit-Code nicht. Ein deprecated Key ist kein Mangel
+    und sie ändern den Exit-Code nicht. Ein deprecated Key ist kein Mangel
     der Datei, sondern eine Angabe ueber ihre Zukunft.
     """
     fehler = warnungen = hinweise = 0
@@ -391,7 +391,7 @@ def _bericht_text(ergebnisse: list[dict], strict: bool) -> str:
                       "sagt. Mit --strict werden daraus Fehler.")
     if hinweise:
         zeilen.append("Hinweise nennen Payloads und Keys, von denen Apple "
-                      "abraet. Sie aendern den Exit-Code nicht.")
+                      "abrät. Sie ändern den Exit-Code nicht.")
     return "\n".join(zeilen)
 
 
@@ -442,8 +442,8 @@ def main(argv=None) -> int:
                          "PayloadTypes ohne Schema, format-Regex, doppelte "
                          "PayloadUUIDs)")
     ap.add_argument("--deprecations", action="store_true",
-                    help="Zusaetzlich melden, welche Payloads und Keys Apple "
-                         "als deprecated fuehrt (Stufe HINWEIS, aendert den "
+                    help="Zusätzlich melden, welche Payloads und Keys Apple "
+                         "als deprecated führt (Stufe HINWEIS, ändert den "
                          "Exit-Code nicht)")
     ap.add_argument("--manifests", action="store_true",
                     help="ProfileManifests als zweite Schema-Quelle zulassen, "

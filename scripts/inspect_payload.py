@@ -208,15 +208,14 @@ def main():
     print(f"# Supported on: {', '.join(unterstuetzte_os(inherited_os))}")
     veraltet = veraltet_ab(inherited_os)
     if veraltet:
-        print(f"# Deprecated: Apple raet von diesem Payload ab, ab "
-              f"{', '.join(veraltet)}.")
+        print(f"# Deprecated: {', '.join(veraltet)}")
     if args.os:
         print(f"# Filter: {args.os}")
     if args.required_only:
         print("# Showing required keys only (with their containers)")
     print()
     print("Legende:  *=required  — keinMarker=optional  "
-          "[deprecated: …]=Apple raet ab")
+          "[deprecated: …]=Apple rät ab")
     print()
     lines = render_keys(doc.get("payloadkeys", []),
                         os_name=args.os, inherited_os=inherited_os,

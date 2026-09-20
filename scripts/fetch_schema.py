@@ -577,10 +577,10 @@ def unterstuetzte_os(supported_os: dict | None) -> list[str]:
 
 
 def veraltet_ab(supported_os: dict | None) -> list[str]:
-    """Die Plattformen, auf denen Apple den Eintrag als deprecated fuehrt.
+    """Die Plattformen, auf denen Apple den Eintrag als deprecated führt.
 
     Jede Plattform steht als "macOS 13.0" drin, also mit der Version, ab der
-    Apple abraet. Ein `deprecated` neben `introduced: n/a` wird nicht
+    Apple abrät. Ein `deprecated` neben `introduced: n/a` wird nicht
     gemeldet: dort gibt es den Key ohnehin nicht.
 
     Deprecated heisst bei Apple "geht noch, aber nimm es nicht mehr". Es ist

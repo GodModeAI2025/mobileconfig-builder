@@ -254,7 +254,7 @@ Bringt der User eine fertige `.mobileconfig` mit, etwa aus Jamf, Intune oder dem
 python3 scripts/validate_mobileconfig.py profil.mobileconfig --offline
 ```
 
-Erkannt werden XML-Plists, Binär-Plists und signierte PKCS#7-Container; die signierte Form packt `openssl smime -verify -noverify` vorher aus. Zwei Stufen, eine Regel: **Fehler** heisst, das Schema wird verletzt (Pflichtkey fehlt, Typ passt nicht, Wert ausserhalb von `rangelist` oder `range`), Exit-Code 2. **Warnung** heisst, Apples Schema sagt dazu nichts (unbekannter Key, PayloadType ohne Schema, `format`-Regex, doppelte `PayloadUUID`), Exit-Code 1. `--strict` macht aus jeder Warnung einen Fehler.
+Erkannt werden XML-Plists, Binär-Plists und signierte PKCS#7-Container; die signierte Form packt `openssl smime -verify -noverify` vorher aus. Standardmässig zwei Stufen, eine Regel: **Fehler** heisst, das Schema wird verletzt (Pflichtkey fehlt, Typ passt nicht, Wert ausserhalb von `rangelist` oder `range`), Exit-Code 2. **Warnung** heisst, Apples Schema sagt dazu nichts (unbekannter Key, PayloadType ohne Schema, `format`-Regex, doppelte `PayloadUUID`), Exit-Code 1. `--strict` macht aus jeder Warnung einen Fehler.
 
 Wichtig beim Berichten: eine Warnung ist kein Befund gegen das Profil, sondern eine Stelle, an der dieses Werkzeug nichts sagen kann. Fremde Profile tragen regelmässig Keys, die Apple nie beschrieben hat. Nenne dem User beide Stufen getrennt und behaupte nicht, ein Profil mit Warnungen sei kaputt.
 
@@ -265,6 +265,8 @@ python3 scripts/validate_mobileconfig.py profil.mobileconfig --offline --depreca
 ```
 
 Gemeldet wird dann jeder gesetzte Key und jeder Payload, den Apple unter `supportedOS.<OS>.deprecated` führt, mit Plattform und Version. Das ist eine dritte, rein informierende Stufe **Hinweis**: ein deprecated Key ist kein Verstoss, er funktioniert, bis Apple ihn entfernt — aber genau solche Keys machen ein Profil nach einem Upgrade stillschweigend wirkungslos. `--strict` macht daraus keinen Fehler, und der Exit-Code bleibt unberührt. Ohne das Flag ändert sich nichts.
+
+Das trifft auch die Keys, mit denen dieser Skill Apple Intelligence abschaltet: `allowWritingTools`, `allowGenmoji`, `allowImagePlayground`, `allowMailSummary`, `allowExternalIntelligenceIntegrations` und `allowAppleIntelligenceReport` führt Apple seit iOS/macOS 26.4 als deprecated, ebenso `allowAssistant` für Siri. Sie wirken weiter, Apple verweist aber auf die deklarativen Konfigurationen `com.apple.configuration.intelligence.settings` und `com.apple.configuration.siri.settings`, die dieser Skill nicht baut. Sag das dem User, wenn er ein solches Profil für 26.4 oder neuer anlegt.
 
 Was der Validator nicht leistet: er prüft nicht, ob das Zielsystem die Keys unterstützt (`supportedOS` bleibt sonst unbeachtet), er sagt nicht, wer signiert hat (die Zertifikatskette wird bewusst nicht geprüft), und verschlüsselte Payloads bleiben zu.
 

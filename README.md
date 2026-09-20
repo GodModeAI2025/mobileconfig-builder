@@ -222,7 +222,8 @@ plist, and a signed PKCS#7 container, which it unwraps with
 goes against `TopLevel.yaml`, every entry in `PayloadContent` against its own
 schema, which is the same code path the build uses.
 
-Findings come in two levels, and one rule separates them:
+Findings come in two levels by default, and one rule separates them;
+`--deprecations` adds a third that only informs:
 
 | Level | Meaning | Examples | Exit |
 |-------|---------|----------|------|

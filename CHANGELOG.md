@@ -13,9 +13,16 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 ### Geaendert
 
 - `assets/examples/classroom_ipad.json` setzt `forceITunesStorePasswordEntry`
-  nicht mehr. Apple fuehrt den Key seit iOS 17 als deprecated, und
-  `allowInAppPurchases: false` steht im selben Payload ohnehin schon. Der
-  neue `--deprecations`-Lauf hat ihn im eigenen Beispiel gefunden.
+  nicht mehr. Apple fuehrt den Key seit iOS 17 als deprecated und nennt
+  keinen Ersatz; fuer das Beispiel genuegt `allowInAppPurchases: false`, das
+  im selben Payload ohnehin schon steht -- ein anderer Zweck, aber der, um
+  den es hier geht. Der neue `--deprecations`-Lauf hat den Key im eigenen
+  Beispiel gefunden.
+- `references/payload-cheatsheet.md` fuehrt `allowAssistant` nicht mehr
+  unter den gaengigen Restrictions-Keys und nennt stattdessen die Siri- und
+  Apple-Intelligence-Keys, die Apple mit 26.4 zugunsten der deklarativen
+  Konfigurationen aufgegeben hat. `SKILL.md` sagt dasselbe an der Stelle,
+  an der es um `--deprecations` geht.
 - `inspect_payload.py` und `fetch_schema.py --list` werten `introduced: n/a`
   aus. Apples Schema nennt eine Plattform auch dann unter `supportedOS`, wenn
   es sie ausschliesst. Vorher zeigte `inspect_payload.py

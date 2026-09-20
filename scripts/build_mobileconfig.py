@@ -247,11 +247,11 @@ def validate_payload(payload: dict, branch: str,
 
 def _sammle_veraltete(values: dict, defs: list[dict], path: str,
                       befunde: list[str]):
-    """Traegt jeden gesetzten Key ein, den Apple als deprecated fuehrt.
+    """Trägt jeden gesetzten Key ein, den Apple als deprecated führt.
 
-    Gelaufen wird ueber die Werte des Profils, nicht ueber das Schema: zwei
+    Gelaufen wird über die Werte des Profils, nicht über das Schema: zwei
     Apple-Schemata (applicationaccess.new, homescreenlayout) beschreiben sich
-    selbst rekursiv, ein Lauf ueber alle subkeys wuerde dort nicht enden.
+    selbst rekursiv, ein Lauf über alle subkeys würde dort nicht enden.
     """
     by_name = {d["key"]: d for d in defs if isinstance(d, dict)
                and d.get("key") and d.get("key") != "ANY"}
@@ -263,7 +263,7 @@ def _sammle_veraltete(values: dict, defs: list[dict], path: str,
         veraltet = veraltet_ab(kdef.get("supportedOS"))
         if veraltet:
             befunde.append(f"{unterpfad}: Key von Apple als deprecated "
-                           f"gefuehrt, ab {', '.join(veraltet)}")
+                           f"geführt, ab {', '.join(veraltet)}")
         subkeys = kdef.get("subkeys") or []
         if not subkeys:
             continue
@@ -283,7 +283,7 @@ def _sammle_veraltete(values: dict, defs: list[dict], path: str,
 
 def veraltete_eintraege(payload: dict, branch: str,
                         manifeste: dict | None = None) -> list[str]:
-    """Payload und gesetzte Keys, von denen Apple abraet.
+    """Payload und gesetzte Keys, von denen Apple abrät.
 
     Kein Schema-Verstoss und deshalb getrennt von `validate_payload`: ein
     deprecated Key funktioniert weiter, bis Apple ihn entfernt. Gemeldet wird
@@ -300,7 +300,7 @@ def veraltete_eintraege(payload: dict, branch: str,
     veraltet = veraltet_ab((schema.get("payload") or {}).get("supportedOS"))
     if veraltet:
         befunde.append(f"{ptype}: Payload von Apple als deprecated "
-                       f"gefuehrt, ab {', '.join(veraltet)}")
+                       f"geführt, ab {', '.join(veraltet)}")
     keydefs = list(schema.get("payloadkeys", []) or [])
     keydefs += get_common_keys(branch)
     _sammle_veraltete(payload, keydefs, ptype, befunde)

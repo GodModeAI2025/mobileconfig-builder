@@ -43,13 +43,26 @@ Wichtige Keys:
 Sehr viele Booleans:
 - `allowAppInstallation`
 - `allowCamera`, `allowExplicitContent`, `allowInAppPurchases`
-- `allowSafari`, `allowAirDrop`, `allowAssistant`
+- `allowSafari`, `allowAirDrop`
 - `forcePasscodeOnDeviceLock`
 - … (>200 Keys; per `inspect_payload.py` schauen)
 
-`forceITunesStorePasswordEntry` fuehrt Apple seit iOS 17 als deprecated;
-`allowInAppPurchases` deckt denselben Zweck ab. `inspect_payload.py`
-markiert solche Keys mit `[deprecated: …]`.
+Was Apple aufgegeben hat, steht nicht in dieser Liste, sondern im Schema:
+`inspect_payload.py` markiert solche Keys mit `[deprecated: …]`, und
+`validate_mobileconfig.py --deprecations` meldet sie in einem fertigen
+Profil. Zwei Fälle, die oft vorkommen:
+
+- `forceITunesStorePasswordEntry` (Passwort bei jedem Kauf) ist seit iOS 17
+  deprecated, und Apple nennt keinen Ersatz. `allowInAppPurchases: false`
+  unterbindet In-App-Käufe ganz — ein anderer Zweck, kein Ersatz.
+- Die Siri- und Apple-Intelligence-Keys (`allowAssistant`,
+  `allowWritingTools`, `allowGenmoji`, `allowImagePlayground`,
+  `allowMailSummary`, `allowExternalIntelligenceIntegrations`,
+  `allowAppleIntelligenceReport`) sind seit iOS/macOS 26.4 deprecated.
+  Apple verweist auf die deklarativen Konfigurationen
+  `com.apple.configuration.siri.settings` und
+  `com.apple.configuration.intelligence.settings`. Sie wirken weiter, aber
+  wer heute ein Profil neu aufsetzt, sollte das wissen.
 
 ## Restrictions macOS — `com.apple.applicationaccess.new`
 

@@ -12,6 +12,17 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 
 ### Geaendert
 
+- `assets/examples/classroom_ipad.json` setzt `forceITunesStorePasswordEntry`
+  nicht mehr. Apple fuehrt den Key seit iOS 17 als deprecated und nennt
+  keinen Ersatz; fuer das Beispiel genuegt `allowInAppPurchases: false`, das
+  im selben Payload ohnehin schon steht -- ein anderer Zweck, aber der, um
+  den es hier geht. Der neue `--deprecations`-Lauf hat den Key im eigenen
+  Beispiel gefunden.
+- `references/payload-cheatsheet.md` fuehrt `allowAssistant` nicht mehr
+  unter den gaengigen Restrictions-Keys und nennt stattdessen die Siri- und
+  Apple-Intelligence-Keys, die Apple mit 26.4 zugunsten der deklarativen
+  Konfigurationen aufgegeben hat. `SKILL.md` sagt dasselbe an der Stelle,
+  an der es um `--deprecations` geht.
 - `inspect_payload.py` und `fetch_schema.py --list` werten `introduced: n/a`
   aus. Apples Schema nennt eine Plattform auch dann unter `supportedOS`, wenn
   es sie ausschliesst. Vorher zeigte `inspect_payload.py
@@ -41,6 +52,18 @@ derselben Nummer existiert, und der Release-Workflow prueft, dass das Tag
 
 ### Hinzugefuegt
 
+- **Deprecated-Keys melden.** Apple fuehrt in seinem Schema 13 Payloads und
+  gut hundert Keys unter `supportedOS.<OS>.deprecated`, und bis hierher las
+  das niemand: ein Profil konnte strikt valide sein und nach dem naechsten
+  OS-Release trotzdem nichts mehr bewirken.
+  `validate_mobileconfig.py --deprecations` nennt jeden gesetzten Key und
+  jeden Payload, von dem Apple abraet, mit Plattform und Version. Das ist
+  eine dritte, rein informierende Stufe `Hinweis`: `--strict` macht daraus
+  keinen Fehler, und der Exit-Code bleibt unberuehrt, weil ein deprecated
+  Key arbeitet, bis Apple ihn entfernt. Ohne das Flag aendert sich nichts.
+  `inspect_payload.py` markiert dieselben Stellen beim Aussuchen, mit
+  `[deprecated: …]` hinter dem Key und einer Kopfzeile `# Deprecated:` beim
+  Payload. Abgesichert ueber Eval 12.
 - **Verschluesseltes DNS.** Cheatsheet-Eintrag fuer
   `com.apple.dnsSettings.managed` mit der Unterscheidung zwischen
   Ausnahmeliste (`OnDemandRules` mit `NeverConnect`) und Beschraenkung auf

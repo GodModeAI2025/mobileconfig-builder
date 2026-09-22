@@ -45,6 +45,7 @@ from fetch_schema import (  # noqa: E402
     ist_preference_domain,
     load_manifest_schema,
     load_schema_map,
+    veraltet_ab,
 )
 
 ALLOWED_TYPES = {
@@ -242,6 +243,68 @@ def validate_payload(payload: dict, branch: str,
     keydefs += get_common_keys(branch)
     _check_keys(payload, keydefs, ptype, errors, strict)
     return errors
+
+
+def _sammle_veraltete(values: dict, defs: list[dict], path: str,
+                      befunde: list[str]):
+    """Trägt jeden gesetzten Key ein, den Apple als deprecated führt.
+
+    Gelaufen wird über die Werte des Profils, nicht über das Schema: zwei
+    Apple-Schemata (applicationaccess.new, homescreenlayout) beschreiben sich
+    selbst rekursiv, ein Lauf über alle subkeys würde dort nicht enden.
+    """
+    by_name = {d["key"]: d for d in defs if isinstance(d, dict)
+               and d.get("key") and d.get("key") != "ANY"}
+    for vname, wert in values.items():
+        kdef = by_name.get(vname)
+        if kdef is None:
+            continue
+        unterpfad = f"{path}.{vname}" if path else vname
+        veraltet = veraltet_ab(kdef.get("supportedOS"))
+        if veraltet:
+            befunde.append(f"{unterpfad}: Key von Apple als deprecated "
+                           f"geführt, ab {', '.join(veraltet)}")
+        subkeys = kdef.get("subkeys") or []
+        if not subkeys:
+            continue
+        if isinstance(wert, dict):
+            _sammle_veraltete(wert, subkeys, unterpfad, befunde)
+        elif isinstance(wert, list):
+            # Bei <array> beschreibt subkeys[0] die Form eines Eintrags.
+            eintrag_def = subkeys[0] if isinstance(subkeys[0], dict) else {}
+            eintrag_subkeys = eintrag_def.get("subkeys") or []
+            if not eintrag_subkeys:
+                continue
+            for i, eintrag in enumerate(wert):
+                if isinstance(eintrag, dict):
+                    _sammle_veraltete(eintrag, eintrag_subkeys,
+                                      f"{unterpfad}[{i}]", befunde)
+
+
+def veraltete_eintraege(payload: dict, branch: str,
+                        manifeste: dict | None = None) -> list[str]:
+    """Payload und gesetzte Keys, von denen Apple abrät.
+
+    Kein Schema-Verstoss und deshalb getrennt von `validate_payload`: ein
+    deprecated Key funktioniert weiter, bis Apple ihn entfernt. Gemeldet wird
+    er trotzdem, weil genau diese Keys ein Profil nach einem OS-Upgrade
+    stillschweigend wirkungslos machen.
+    """
+    ptype = payload.get("PayloadType")
+    if not ptype:
+        return []
+    schema = get_schema(ptype, branch, manifeste=manifeste)
+    if schema is None:
+        return []
+    befunde: list[str] = []
+    veraltet = veraltet_ab((schema.get("payload") or {}).get("supportedOS"))
+    if veraltet:
+        befunde.append(f"{ptype}: Payload von Apple als deprecated "
+                       f"geführt, ab {', '.join(veraltet)}")
+    keydefs = list(schema.get("payloadkeys", []) or [])
+    keydefs += get_common_keys(branch)
+    _sammle_veraltete(payload, keydefs, ptype, befunde)
+    return befunde
 
 
 TOP_LEVEL_TYPE = "TopLevel"
